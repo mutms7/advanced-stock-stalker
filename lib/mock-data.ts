@@ -240,6 +240,47 @@ export const instruments: InstrumentDetail[] = [
     history: history(80, 0.06, 1.2)
   },
   {
+    symbol: "XEQT",
+    name: "iShares Core Equity ETF Portfolio",
+    type: "ETF",
+    exchange: "Toronto Stock Exchange",
+    price: 38.64,
+    changePercent: 0.0039,
+    expenseRatio: 0.002,
+    dividendYield: 0.0208,
+    aum: 8_900_000_000,
+    benchmark: "Global all-equity ETF portfolio",
+    focus: "All-in-one globally diversified equity ETF for Canadian investors",
+    summary:
+      "XEQT is an iShares all-equity ETF portfolio that holds underlying equity ETFs for U.S., Canadian, international developed, and emerging-market exposure.",
+    beta: 1.02,
+    volatility: 0.164,
+    maxDrawdown: -0.287,
+    trackingError: 0.0048,
+    holdings: [
+      { symbol: "ITOT", name: "iShares Core S&P Total U.S. Stock Market ETF", weight: 0.439, sector: "U.S. Equity" },
+      { symbol: "XIC", name: "iShares Core S&P/TSX Capped Composite Index ETF", weight: 0.253, sector: "Canadian Equity" },
+      { symbol: "XEF", name: "iShares Core MSCI EAFE IMI Index ETF", weight: 0.247, sector: "Developed International" },
+      { symbol: "IEMG", name: "iShares Core MSCI Emerging Markets ETF", weight: 0.053, sector: "Emerging Markets" },
+      { symbol: "CASH", name: "Cash and other net assets", weight: 0.008, sector: "Cash" }
+    ],
+    sectors: [
+      { label: "U.S. Equity", weight: 0.439 },
+      { label: "Canadian Equity", weight: 0.253 },
+      { label: "Developed International", weight: 0.247 },
+      { label: "Emerging Markets", weight: 0.053 },
+      { label: "Cash", weight: 0.008 }
+    ],
+    regions: [
+      { label: "United States", weight: 0.439 },
+      { label: "Canada", weight: 0.253 },
+      { label: "International Developed", weight: 0.247 },
+      { label: "Emerging Markets", weight: 0.053 },
+      { label: "Cash", weight: 0.008 }
+    ],
+    history: history(35.2, 0.095, 0.75)
+  },
+  {
     symbol: "NVDA",
     name: "NVIDIA Corporation",
     type: "Stock",
@@ -329,6 +370,24 @@ export const newsBySymbol: Record<string, NewsArticle[]> = {
       publishedAt: new Date(Date.UTC(2026, 5, 1, 10)).toISOString(),
       snippet:
         "Dividend quality strategies saw renewed attention amid debate over broad-market valuations."
+    }
+  ],
+  XEQT: [
+    {
+      title: "All-in-one equity ETF portfolios remain popular with Canadian long-term investors",
+      source: "ETF Allocation Desk",
+      url: "https://example.com/canadian-all-equity-etfs",
+      publishedAt: new Date(Date.UTC(2026, 5, 1, 9)).toISOString(),
+      snippet:
+        "Canadian investors continued to use globally diversified all-equity ETF portfolios as simple core holdings for long horizons."
+    },
+    {
+      title: "Global equity allocation funds balance U.S. leadership with Canadian home bias",
+      source: "Portfolio Monitor",
+      url: "https://example.com/global-equity-home-bias",
+      publishedAt: new Date(Date.UTC(2026, 4, 31, 13)).toISOString(),
+      snippet:
+        "Strategists noted that all-equity allocation ETFs can reduce maintenance burden while keeping investors exposed to regional valuation shifts."
     }
   ],
   NVDA: [
