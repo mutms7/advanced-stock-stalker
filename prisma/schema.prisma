@@ -1,0 +1,148 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Instrument {
+  id             String          @id @default(cuid())
+  symbol         String          @unique
+  name           String
+  type           AssetType
+  exchange       String?
+  benchmark      String?
+  focus          String?
+  expenseRatio   Decimal?
+  dividendYield  Decimal?
+  aum            Decimal?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  snapshots      PriceSnapshot[]
+  fundProfile    FundProfile?
+  newsArticles   NewsArticle[]
+  assessments    Assessment[]
+  watchlistItems WatchlistItem[]
+}
+
+model PriceSnapshot {
+  id           String     @id @default(cuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  close        Decimal
+  changePct    Decimal?
+  capturedAt   DateTime
+
+  @@index([instrumentId, capturedAt])
+}
+
+model FundProfile {
+  id            String        @id @default(cuid())
+  instrumentId  String        @unique
+  instrument    Instrument    @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  beta          Decimal?
+  volatility    Decimal?
+  maxDrawdown   Decimal?
+  trackingError Decimal?
+  holdings      FundHolding[]
+  exposures     FundExposure[]
+  updatedAt     DateTime      @updatedAt
+}
+
+model FundHolding {
+  id            String      @id @default(cuid())
+  fundProfileId String
+  fundProfile   FundProfile @relation(fields: [fundProfileId], references: [id], onDelete: Cascade)
+  symbol        String
+  name          String
+  sector        String?
+  weight        Decimal
+
+  @@index([fundProfileId, weight])
+}
+
+model FundExposure {
+  id            String       @id @default(cuid())
+  fundProfileId String
+  fundProfile   FundProfile  @relation(fields: [fundProfileId], references: [id], onDelete: Cascade)
+  kind          ExposureKind
+  label         String
+  weight        Decimal
+
+  @@index([fundProfileId, kind])
+}
+
+model Watchlist {
+  id        String          @id @default(cuid())
+  name      String
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  items     WatchlistItem[]
+}
+
+model WatchlistItem {
+  id           String     @id @default(cuid())
+  watchlistId  String
+  watchlist    Watchlist  @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  notes        String?
+  createdAt    DateTime   @default(now())
+
+  @@unique([watchlistId, instrumentId])
+}
+
+model NewsArticle {
+  id           String     @id @default(cuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  title        String
+  source       String
+  url          String
+  snippet      String?
+  publishedAt  DateTime?
+  fetchedAt    DateTime   @default(now())
+
+  @@index([instrumentId, publishedAt])
+}
+
+model Assessment {
+  id                  String              @id @default(cuid())
+  instrumentId        String
+  instrument          Instrument          @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  direction           AssessmentDirection
+  confidence          Decimal
+  timeHorizon         String
+  summary             String
+  bullCase            Json
+  bearCase            Json
+  keyRisks            Json
+  citationSnapshot    Json
+  notInvestmentAdvice String
+  generatedAt         DateTime            @default(now())
+
+  @@index([instrumentId, generatedAt])
+}
+
+enum AssetType {
+  ETF
+  STOCK
+  MUTUAL_FUND
+  INDEX
+}
+
+enum ExposureKind {
+  SECTOR
+  REGION
+  ASSET_CLASS
+  CREDIT_QUALITY
+  MATURITY
+}
+
+enum AssessmentDirection {
+  UP
+  DOWN
+  SIDEWAYS
+  UNCERTAIN
+}
