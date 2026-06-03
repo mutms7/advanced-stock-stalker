@@ -5,12 +5,12 @@ test.describe("dashboard smoke", () => {
     await page.goto("/");
 
     await expect(page.getByRole("heading", { name: "Advanced Stock Stalker" })).toBeVisible();
-    await expect(page.getByText("Prospect Queue")).toBeVisible();
-    await expect(page.getByText("ETF Comparison Matrix")).toBeVisible();
-    await expect(page.getByText("Directional Thesis")).toBeVisible();
-    await expect(page.getByText("Recent Signal Feed")).toBeVisible();
+    await expect(page.getByText("Stock List")).toBeVisible();
+    await expect(page.getByText("Compare Funds", { exact: true })).toBeVisible();
+    await expect(page.getByText("News plus a plain-English view.")).toBeVisible();
+    await expect(page.getByText("Recent News")).toBeVisible();
     await expect(page.getByText("Chart Settings")).toBeVisible();
-    await expect(page.getByText("Workspace Layout")).toBeVisible();
+    await expect(page.getByText("Layout")).toBeVisible();
     await expect(page.getByRole("button", { name: "1Y" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Live pulse" })).toBeVisible();
     await expect(page.getByText("Vanguard S&P 500 ETF").first()).toBeVisible();
@@ -22,20 +22,34 @@ test.describe("dashboard smoke", () => {
 
     await page.getByTestId("workspace-size-max").click();
 
-    await expect(page.getByText("Prospect Queue")).toBeHidden();
-    await expect(page.getByText("Directional Thesis")).toBeHidden();
+    await expect(page.getByText("Stock List")).toBeHidden();
+    await expect(page.getByText("News plus a plain-English view.")).toBeHidden();
     await expect(page.locator('svg[aria-label^="VOO"]').first()).toBeVisible();
 
     await page.getByTestId("workspace-size-focus").click();
-    await page.getByRole("button", { name: "Research", exact: true }).click();
+    await page.getByTestId("panel-chip-research").click();
 
-    await expect(page.getByText("Directional Thesis")).toBeHidden();
+    await expect(page.getByText("News plus a plain-English view.")).toBeHidden();
+  });
+
+  test("can drag a panel into and out of the dock", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("workspace-layout")).toHaveAttribute("data-ready", "true");
+
+    await page.getByTestId("panel-chip-research").dragTo(page.getByTestId("hidden-panel-dock"));
+
+    await expect(page.getByText("News plus a plain-English view.")).toBeHidden();
+    await expect(page.getByTestId("hidden-panel-dock").getByTestId("panel-chip-research")).toBeVisible();
+
+    await page.getByTestId("panel-chip-research").dragTo(page.getByTestId("visible-panel-dock"));
+
+    await expect(page.getByText("News plus a plain-English view.")).toBeVisible();
   });
 
   test("searches for a mock instrument and promotes the first result", async ({ page }) => {
     await page.goto("/");
 
-    await page.getByPlaceholder("Search VOO, XEQT, QQQM, VXUS...").fill("vxus");
+    await page.getByPlaceholder("Search any ticker, like VOO or XEQT...").fill("vxus");
     await page.getByRole("button", { name: "Search", exact: true }).click();
 
     await expect(page.getByText("Vanguard Total International Stock ETF").first()).toBeVisible();

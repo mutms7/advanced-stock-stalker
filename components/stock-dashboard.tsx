@@ -1,6 +1,15 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  type CSSProperties,
+  type DragEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore
+} from "react";
 import {
   Activity,
   ArrowDownRight,
@@ -49,11 +58,25 @@ const chartStyles = ["Line", "Area", "Candles"] as const;
 const chartScales = ["Price", "% Change"] as const;
 const chartSizes = ["Compact", "Focus", "Max"] as const;
 const refreshIntervals = [15_000, 30_000, 60_000] as const;
+const workspacePanels = [
+  { id: "prospects", label: "List" },
+  { id: "research", label: "Quick Take" },
+  { id: "metrics", label: "Stats" },
+  { id: "indexLens", label: "Fund Basics" },
+  { id: "comparison", label: "Compare" },
+  { id: "exposures", label: "Holdings" }
+] as const;
 
 type ChartRange = (typeof chartRanges)[number];
 type ChartStyle = (typeof chartStyles)[number];
 type ChartScale = (typeof chartScales)[number];
 type ChartSize = (typeof chartSizes)[number];
+type WorkspacePanelId = (typeof workspacePanels)[number]["id"];
+type WorkspacePanel = {
+  id: WorkspacePanelId;
+  label: string;
+  visible: boolean;
+};
 
 const subscribeWorkspaceReady = () => () => undefined;
 const getWorkspaceReadySnapshot = () => true;
@@ -86,6 +109,9 @@ export function StockDashboard() {
   const [showIndexLens, setShowIndexLens] = useState(true);
   const [showComparison, setShowComparison] = useState(true);
   const [showExposurePanels, setShowExposurePanels] = useState(true);
+  const [prospectWidth, setProspectWidth] = useState(320);
+  const [researchWidth, setResearchWidth] = useState(390);
+  const [metricsWidth, setMetricsWidth] = useState(280);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState<(typeof refreshIntervals)[number]>(30_000);
   const [isHydratingDetail, setIsHydratingDetail] = useState(false);
@@ -114,12 +140,35 @@ export function StockDashboard() {
   const metricsVisible = showMetrics && chartSize !== "Max";
   const comparisonVisible = showComparison && chartSize !== "Max";
   const exposurePanelsVisible = showExposurePanels && chartSize !== "Max";
-  const workspaceGridClass = cn(
-    "grid gap-4",
-    prospectsVisible && researchRailVisible && "xl:grid-cols-[320px_minmax(0,1fr)_390px]",
-    prospectsVisible && !researchRailVisible && "xl:grid-cols-[320px_minmax(0,1fr)]",
-    !prospectsVisible && researchRailVisible && "xl:grid-cols-[minmax(0,1fr)_390px]",
-    !prospectsVisible && !researchRailVisible && "xl:grid-cols-1"
+  const workspaceColumns = [
+    prospectsVisible ? `${prospectWidth}px` : null,
+    "minmax(0, 1fr)",
+    researchRailVisible ? `${researchWidth}px` : null
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const workspaceStyle = {
+    "--workspace-columns": workspaceColumns,
+    "--metric-column": `${metricsWidth}px`
+  } as CSSProperties;
+  const panelStates = useMemo<WorkspacePanel[]>(
+    () =>
+      workspacePanels.map((panel) => ({
+        ...panel,
+        visible:
+          panel.id === "prospects"
+            ? showProspects
+            : panel.id === "research"
+              ? showResearchRail
+              : panel.id === "metrics"
+                ? showMetrics
+                : panel.id === "indexLens"
+                  ? showIndexLens
+                  : panel.id === "comparison"
+                    ? showComparison
+                    : showExposurePanels
+      })),
+    [showComparison, showExposurePanels, showIndexLens, showMetrics, showProspects, showResearchRail]
   );
 
   const hydrateSelectedDetail = useCallback(
@@ -169,6 +218,39 @@ export function StockDashboard() {
 
     return () => window.clearInterval(interval);
   }, [autoRefresh, hydrateSelectedDetail, refreshIntervalMs, selected.symbol]);
+
+  function setPanelVisibility(panelId: WorkspacePanelId, visible: boolean) {
+    if (visible && chartSize === "Max") {
+      setChartSize("Focus");
+    }
+
+    if (panelId === "prospects") {
+      setShowProspects(visible);
+      return;
+    }
+
+    if (panelId === "research") {
+      setShowResearchRail(visible);
+      return;
+    }
+
+    if (panelId === "metrics") {
+      setShowMetrics(visible);
+      return;
+    }
+
+    if (panelId === "indexLens") {
+      setShowIndexLens(visible);
+      return;
+    }
+
+    if (panelId === "comparison") {
+      setShowComparison(visible);
+      return;
+    }
+
+    setShowExposurePanels(visible);
+  }
 
   async function handleSearch(nextQuery = query) {
     const normalizedQuery = nextQuery.trim();
@@ -279,7 +361,7 @@ export function StockDashboard() {
                 <div>
                   <h1 className="text-xl font-semibold tracking-normal sm:text-2xl">Advanced Stock Stalker</h1>
                   <p className="text-xs text-muted-foreground sm:text-sm">
-                    Prospect, compare, and stress-test index funds with cited market context.
+                    Search stocks, compare funds, read news, and keep the chart front and center.
                   </p>
                 </div>
               </div>
@@ -296,7 +378,7 @@ export function StockDashboard() {
                         void handleSearch();
                       }
                     }}
-                    placeholder="Search VOO, XEQT, QQQM, VXUS..."
+                    placeholder="Search any ticker, like VOO or XEQT..."
                     aria-label="Search instruments"
                     className="pl-9"
                   />
@@ -320,29 +402,25 @@ export function StockDashboard() {
           <WorkspaceControls
             chartSize={chartSize}
             setChartSize={setChartSize}
-            showProspects={showProspects}
-            setShowProspects={setShowProspects}
-            showResearchRail={showResearchRail}
-            setShowResearchRail={setShowResearchRail}
-            showMetrics={showMetrics}
-            setShowMetrics={setShowMetrics}
-            showIndexLens={showIndexLens}
-            setShowIndexLens={setShowIndexLens}
-            showComparison={showComparison}
-            setShowComparison={setShowComparison}
-            showExposurePanels={showExposurePanels}
-            setShowExposurePanels={setShowExposurePanels}
+            panels={panelStates}
+            onPanelVisibilityChange={setPanelVisibility}
+            prospectWidth={prospectWidth}
+            setProspectWidth={setProspectWidth}
+            researchWidth={researchWidth}
+            setResearchWidth={setResearchWidth}
+            metricsWidth={metricsWidth}
+            setMetricsWidth={setMetricsWidth}
             isReady={isWorkspaceReady}
           />
 
-          <section className={workspaceGridClass}>
+          <section className="workspace-grid grid gap-4" style={workspaceStyle}>
             {prospectsVisible ? (
             <Card className="noise-panel focus-rail">
               <CardHeader>
                 <div className="flex items-center justify-between gap-2">
                   <div>
-                    <CardTitle>Prospect Queue</CardTitle>
-                    <CardDescription>Index funds first, single stocks when useful.</CardDescription>
+                    <CardTitle>Stock List</CardTitle>
+                    <CardDescription>ETFs and stocks you can open quickly.</CardDescription>
                   </div>
                   <Badge variant={searchError ? "warning" : "magenta"}>
                     {isSearching ? "scanning" : `${results.length} live`}
@@ -353,7 +431,7 @@ export function StockDashboard() {
                 <div className="rounded-md border border-white/10 bg-background/35 p-3">
                   <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
                     <ListFilter className="size-3.5 text-primary" />
-                    Core Screens
+                    Quick Picks
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {quickSearches.map((term) => (
@@ -409,7 +487,7 @@ export function StockDashboard() {
                   <EmptyState
                     icon={<SearchX />}
                     title={lastSearchQuery ? `No matches for "${lastSearchQuery}"` : "No prospects found"}
-                    description="Broaden the query or choose a core screen."
+                    description="Try another ticker or choose a quick pick."
                   >
                     <Button type="button" variant="secondary" size="sm" onClick={() => void handleSearch("")}>
                       <RefreshCw />
@@ -460,7 +538,7 @@ export function StockDashboard() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className={cn("grid gap-3", metricsVisible && "2xl:grid-cols-[minmax(0,1fr)_280px]")}>
+                  <div className={cn("chart-detail-grid grid gap-3", metricsVisible && "has-metrics")}>
                     <ChartTerminal
                       instrument={selected}
                       benchmark={showBenchmark ? selectedBenchmark : undefined}
@@ -525,7 +603,7 @@ export function StockDashboard() {
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2 text-sm font-medium text-foreground">
                         <Info className="size-4 text-primary" />
-                        Index-Fund Lens
+                        Fund Basics
                       </div>
                       <Badge variant={selected.type === "ETF" ? "default" : "outline"}>{selected.type}</Badge>
                     </div>
@@ -544,8 +622,8 @@ export function StockDashboard() {
                 <CardHeader className="pb-2">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                      <CardTitle>ETF Comparison Matrix</CardTitle>
-                      <CardDescription>Cost, exposure, ballast, and concentration in one scan.</CardDescription>
+                      <CardTitle>Compare Funds</CardTitle>
+                      <CardDescription>Fees, yield, size, risk, and top exposure.</CardDescription>
                     </div>
                     <Badge variant="secondary">{compareFunds.length} selected</Badge>
                   </div>
@@ -654,7 +732,7 @@ export function StockDashboard() {
                     <EmptyState
                       icon={<Layers3 />}
                       title="No funds selected"
-                      description="Choose ETFs above to rebuild the matrix."
+                      description="Choose ETFs above to compare them."
                     >
                       <Button
                         type="button"
@@ -678,22 +756,22 @@ export function StockDashboard() {
                 <CardHeader>
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <CardTitle>Directional Thesis</CardTitle>
-                      <CardDescription>Cited, cautious, and time-boxed.</CardDescription>
+                      <CardTitle>Quick Take</CardTitle>
+                      <CardDescription>News plus a plain-English view.</CardDescription>
                     </div>
                     <DirectionBadge direction={assessment.direction} />
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {isAssessing ? (
-                    <StateNotice icon={<RefreshCw className="animate-spin" />} title="Assessment running" tone="primary">
-                      Refreshing cited thesis for {selected.symbol}.
+                    <StateNotice icon={<RefreshCw className="animate-spin" />} title="Checking news" tone="primary">
+                      Updating the quick take for {selected.symbol}.
                     </StateNotice>
                   ) : null}
 
                   {assessmentError ? (
-                    <StateNotice icon={<CircleAlert />} title="Assessment fallback" tone="warning">
-                      {assessmentError} The cached thesis remains visible.
+                    <StateNotice icon={<CircleAlert />} title="Could not refresh" tone="warning">
+                      {assessmentError} The last quick take is still visible.
                     </StateNotice>
                   ) : null}
 
@@ -728,8 +806,8 @@ export function StockDashboard() {
                 <CardHeader>
                   <div className="flex items-center justify-between gap-2">
                     <div>
-                      <CardTitle>Recent Signal Feed</CardTitle>
-                      <CardDescription>News/search context for the assessment.</CardDescription>
+                      <CardTitle>Recent News</CardTitle>
+                      <CardDescription>Articles used for the quick take.</CardDescription>
                     </div>
                     <Activity className="size-4 text-primary" />
                   </div>
@@ -764,7 +842,7 @@ export function StockDashboard() {
             <Card className="focus-rail">
               <CardHeader>
                 <CardTitle>Top Holdings</CardTitle>
-                <CardDescription>Concentration check for the selected instrument.</CardDescription>
+                <CardDescription>Biggest positions in the selected fund.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 {selected.holdings.length ? (
@@ -777,7 +855,7 @@ export function StockDashboard() {
                   ))
                 ) : (
                   <p className="rounded-md border border-border bg-secondary/35 p-3 text-sm text-muted-foreground">
-                    Single-stock view. ETF holding analysis appears when a fund is selected.
+                    This is a single stock. Fund holdings appear when you pick an ETF.
                   </p>
                 )}
               </CardContent>
@@ -803,79 +881,290 @@ type IndexInsight = {
 function WorkspaceControls({
   chartSize,
   setChartSize,
-  showProspects,
-  setShowProspects,
-  showResearchRail,
-  setShowResearchRail,
-  showMetrics,
-  setShowMetrics,
-  showIndexLens,
-  setShowIndexLens,
-  showComparison,
-  setShowComparison,
-  showExposurePanels,
-  setShowExposurePanels,
+  panels,
+  onPanelVisibilityChange,
+  prospectWidth,
+  setProspectWidth,
+  researchWidth,
+  setResearchWidth,
+  metricsWidth,
+  setMetricsWidth,
   isReady
 }: {
   chartSize: ChartSize;
   setChartSize: (size: ChartSize) => void;
-  showProspects: boolean;
-  setShowProspects: (value: boolean) => void;
-  showResearchRail: boolean;
-  setShowResearchRail: (value: boolean) => void;
-  showMetrics: boolean;
-  setShowMetrics: (value: boolean) => void;
-  showIndexLens: boolean;
-  setShowIndexLens: (value: boolean) => void;
-  showComparison: boolean;
-  setShowComparison: (value: boolean) => void;
-  showExposurePanels: boolean;
-  setShowExposurePanels: (value: boolean) => void;
+  panels: WorkspacePanel[];
+  onPanelVisibilityChange: (panelId: WorkspacePanelId, visible: boolean) => void;
+  prospectWidth: number;
+  setProspectWidth: (value: number) => void;
+  researchWidth: number;
+  setResearchWidth: (value: number) => void;
+  metricsWidth: number;
+  setMetricsWidth: (value: number) => void;
   isReady: boolean;
 }) {
+  const visiblePanels = panels.filter((panel) => panel.visible);
+  const hiddenPanels = panels.filter((panel) => !panel.visible);
+  const [draggedPanel, setDraggedPanel] = useState<WorkspacePanelId | null>(null);
+
+  function handleDragStart(event: DragEvent<HTMLButtonElement>, panelId: WorkspacePanelId) {
+    setDraggedPanel(panelId);
+    event.dataTransfer.setData("application/x-stock-panel", panelId);
+    event.dataTransfer.setData("text/plain", panelId);
+    event.dataTransfer.effectAllowed = "move";
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>, visible: boolean) {
+    event.preventDefault();
+    const panelId = event.dataTransfer.getData("application/x-stock-panel") || event.dataTransfer.getData("text/plain");
+
+    if (isWorkspacePanelId(panelId)) {
+      onPanelVisibilityChange(panelId, visible);
+    }
+
+    setDraggedPanel(null);
+  }
+
+  function handleDragEnd(event: DragEvent<HTMLButtonElement>, panelId: WorkspacePanelId) {
+    const dropTarget = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-panel-dropzone]");
+    const zone = dropTarget?.dataset.panelDropzone;
+
+    if (zone === "visible" || zone === "hidden") {
+      onPanelVisibilityChange(panelId, zone === "visible");
+    }
+
+    setDraggedPanel(null);
+  }
+
+  function handlePointerDrop(visible: boolean) {
+    if (draggedPanel) {
+      const currentPanel = panels.find((panel) => panel.id === draggedPanel);
+
+      if (currentPanel?.visible === visible) {
+        window.setTimeout(() => setDraggedPanel(null), 0);
+        return;
+      }
+
+      onPanelVisibilityChange(draggedPanel, visible);
+      setDraggedPanel(null);
+    }
+  }
+
   return (
     <div
-      className="focus-rail rounded-lg border border-white/10 bg-background/72 p-3 backdrop-blur-xl"
+      className="dock-bar focus-rail rounded-lg border border-white/10 bg-background/72 px-3 py-2 backdrop-blur-xl"
       data-ready={isReady ? "true" : "false"}
       data-testid="workspace-layout"
       suppressHydrationWarning
     >
-      <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-primary">
-            <Layers3 className="size-4" />
-          </span>
-          <div>
-            <div className="text-sm font-medium">Workspace Layout</div>
-            <div className="mt-1 flex flex-wrap gap-2">
-              {chartSizes.map((size) => (
-                <Button
-                  key={size}
-                  type="button"
-                  variant={chartSize === size ? "secondary" : "outline"}
-                  size="sm"
-                  aria-pressed={chartSize === size}
-                  data-testid={`workspace-size-${size.toLowerCase()}`}
-                  onClick={() => setChartSize(size)}
-                >
-                  {size}
-                </Button>
-              ))}
-            </div>
-          </div>
+      <div className="flex h-12 items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap pr-1">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-primary">
+          <Layers3 className="size-4" />
+        </span>
+        <span className="shrink-0 text-sm font-medium">Layout</span>
+        <div className="flex shrink-0 items-center gap-1">
+          {chartSizes.map((size) => (
+            <Button
+              key={size}
+              type="button"
+              variant={chartSize === size ? "secondary" : "outline"}
+              size="sm"
+              aria-pressed={chartSize === size}
+              data-testid={`workspace-size-${size.toLowerCase()}`}
+              onClick={() => setChartSize(size)}
+            >
+              {size}
+            </Button>
+          ))}
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:w-[780px]">
-          <SettingToggle label="Prospects" checked={showProspects} onChange={setShowProspects} compact />
-          <SettingToggle label="Research" checked={showResearchRail} onChange={setShowResearchRail} compact />
-          <SettingToggle label="Metrics" checked={showMetrics} onChange={setShowMetrics} compact />
-          <SettingToggle label="Index lens" checked={showIndexLens} onChange={setShowIndexLens} compact />
-          <SettingToggle label="Compare" checked={showComparison} onChange={setShowComparison} compact />
-          <SettingToggle label="Exposures" checked={showExposurePanels} onChange={setShowExposurePanels} compact />
-        </div>
+        <PanelDropZone
+          label="On"
+          panels={visiblePanels}
+          visible
+          onDropPanel={handleDrop}
+          onPanelVisibilityChange={onPanelVisibilityChange}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onPointerDrop={handlePointerDrop}
+          onBeginDrag={setDraggedPanel}
+        />
+        <PanelDropZone
+          label="Hidden"
+          panels={hiddenPanels}
+          visible={false}
+          onDropPanel={handleDrop}
+          onPanelVisibilityChange={onPanelVisibilityChange}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onPointerDrop={handlePointerDrop}
+          onBeginDrag={setDraggedPanel}
+        />
+
+        <DockSlider label="List" value={prospectWidth} min={240} max={460} onChange={setProspectWidth} />
+        <DockSlider label="Take" value={researchWidth} min={300} max={540} onChange={setResearchWidth} />
+        <DockSlider label="Stats" value={metricsWidth} min={190} max={380} onChange={setMetricsWidth} />
       </div>
     </div>
   );
+}
+
+function PanelDropZone({
+  label,
+  panels,
+  visible,
+  onDropPanel,
+  onPanelVisibilityChange,
+  onDragStart,
+  onDragEnd,
+  onPointerDrop,
+  onBeginDrag
+}: {
+  label: string;
+  panels: WorkspacePanel[];
+  visible: boolean;
+  onDropPanel: (event: DragEvent<HTMLDivElement>, visible: boolean) => void;
+  onPanelVisibilityChange: (panelId: WorkspacePanelId, visible: boolean) => void;
+  onDragStart: (event: DragEvent<HTMLButtonElement>, panelId: WorkspacePanelId) => void;
+  onDragEnd: (event: DragEvent<HTMLButtonElement>, panelId: WorkspacePanelId) => void;
+  onPointerDrop: (visible: boolean) => void;
+  onBeginDrag: (panelId: WorkspacePanelId | null) => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex h-9 shrink-0 items-center gap-1 rounded-md border px-2",
+        visible ? "border-primary/20 bg-primary/6" : "border-dashed border-fuchsia-300/25 bg-fuchsia-400/7"
+      )}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => onDropPanel(event, visible)}
+      onPointerUp={() => onPointerDrop(visible)}
+      data-panel-dropzone={visible ? "visible" : "hidden"}
+      data-testid={visible ? "visible-panel-dock" : "hidden-panel-dock"}
+    >
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      {panels.length ? (
+        panels.map((panel) => (
+          <PanelDockChip
+            key={panel.id}
+            panel={panel}
+            visible={visible}
+            onVisibilityChange={onPanelVisibilityChange}
+            onDragStart={onDragStart}
+            onDragEnd={onDragEnd}
+            onBeginDrag={onBeginDrag}
+          />
+        ))
+      ) : (
+        <span className="rounded-md border border-white/10 px-2 py-1 text-xs text-muted-foreground">drop here</span>
+      )}
+    </div>
+  );
+}
+
+function PanelDockChip({
+  panel,
+  visible,
+  onVisibilityChange,
+  onDragStart,
+  onDragEnd,
+  onBeginDrag
+}: {
+  panel: WorkspacePanel;
+  visible: boolean;
+  onVisibilityChange: (panelId: WorkspacePanelId, visible: boolean) => void;
+  onDragStart: (event: DragEvent<HTMLButtonElement>, panelId: WorkspacePanelId) => void;
+  onDragEnd: (event: DragEvent<HTMLButtonElement>, panelId: WorkspacePanelId) => void;
+  onBeginDrag: (panelId: WorkspacePanelId | null) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onPointerDown={(event) => {
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const handlePointerUp = (pointerEvent: PointerEvent) => {
+          const distance = Math.hypot(pointerEvent.clientX - startX, pointerEvent.clientY - startY);
+          const dropTarget = document
+            .elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)
+            ?.closest<HTMLElement>("[data-panel-dropzone]");
+          const zone = dropTarget?.dataset.panelDropzone;
+
+          pointerEvent.stopPropagation();
+          onBeginDrag(null);
+
+          if (distance > 8 && (zone === "visible" || zone === "hidden")) {
+            onVisibilityChange(panel.id, zone === "visible");
+            return;
+          }
+
+          if (distance <= 8) {
+            onVisibilityChange(panel.id, !visible);
+          }
+        };
+
+        onBeginDrag(panel.id);
+        window.addEventListener("pointerup", handlePointerUp, { capture: true, once: true });
+      }}
+      onDragStart={(event) => onDragStart(event, panel.id)}
+      onDragEnd={(event) => onDragEnd(event, panel.id)}
+      onClick={(event) => event.preventDefault()}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onVisibilityChange(panel.id, !visible);
+        }
+      }}
+      className={cn(
+        "inline-flex h-7 items-center gap-1 rounded-md border px-2 text-xs font-medium transition",
+        visible
+          ? "border-primary/30 bg-primary/10 text-foreground hover:bg-primary/16"
+          : "border-fuchsia-300/30 bg-fuchsia-400/10 text-fuchsia-100 hover:bg-fuchsia-400/16"
+      )}
+      aria-pressed={visible}
+      data-testid={`panel-chip-${panel.id}`}
+    >
+      {visible ? <Check className="size-3" /> : <Plus className="size-3" />}
+      {panel.label}
+    </button>
+  );
+}
+
+function DockSlider({
+  label,
+  value,
+  min,
+  max,
+  onChange
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="flex h-9 shrink-0 items-center gap-2 rounded-md border border-white/10 bg-background/35 px-2 text-xs text-muted-foreground">
+      <span>{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={10}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="w-24 accent-primary"
+        aria-label={`${label} width`}
+      />
+      <span className="w-9 text-right font-mono text-foreground">{value}</span>
+    </label>
+  );
+}
+
+function isWorkspacePanelId(value: string): value is WorkspacePanelId {
+  return workspacePanels.some((panel) => panel.id === value);
 }
 
 function searchLocalInstruments(query: string) {

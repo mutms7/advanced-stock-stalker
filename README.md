@@ -1,10 +1,22 @@
 # Advanced Stock Stalker
 
-A futuristic, dark-mode stock tracker and ETF comparison dashboard for prospecting investors. The initial scaffold focuses on index funds, fund anatomy, recent news/search context, and cautious AI-generated directional theses.
+A dark stock tracker for looking up stocks and ETFs, comparing funds, reading recent news, and keeping a large price chart on screen.
 
 > Research only. This app does not provide personalized financial, tax, or investment advice.
 
-## What Is Included
+## What The App Can Do
+
+- Search for a stock, ETF, fund, or index by ticker.
+- Show a price chart with time ranges, overlays, volume, and benchmark comparison.
+- Make the chart bigger, shrink side panels, or hide panels in the dock.
+- Drag panel chips into the Hidden dock and drag them back when needed.
+- Resize the list, quick take, and stats areas with sliders.
+- Compare ETFs like VOO, VTI, QQQM, VXUS, BND, SCHD, and XEQT.
+- Show basic fund details: fee, yield, assets, volatility, sectors, regions, and holdings.
+- Pull recent news/search context and make a cautious up/down/sideways quick take.
+- Run with mock data locally, then switch to Polygon/Massive, FMP, Alpha Vantage, Brave Search, and OpenAI when keys are configured.
+
+## Tech Included
 
 - Next.js App Router with TypeScript
 - Tailwind CSS v4 with shadcn/ui-style primitives

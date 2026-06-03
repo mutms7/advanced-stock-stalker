@@ -94,3 +94,34 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
     0 20px 80px rgba(0, 0, 0, 0.28);
 }
+
+.dock-bar {
+  scrollbar-color: rgba(82, 238, 197, 0.45) transparent;
+  scrollbar-width: thin;
+}
+
+.dock-bar::-webkit-scrollbar {
+  height: 6px;
+}
+
+.dock-bar::-webkit-scrollbar-thumb {
+  background: rgba(82, 238, 197, 0.38);
+  border-radius: 999px;
+}
+
+.workspace-grid,
+.chart-detail-grid {
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 1280px) {
+  .workspace-grid {
+    grid-template-columns: var(--workspace-columns, 1fr);
+  }
+}
+
+@media (min-width: 1536px) {
+  .chart-detail-grid.has-metrics {
+    grid-template-columns: minmax(0, 1fr) var(--metric-column, 280px);
+  }
+}
