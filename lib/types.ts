@@ -3,6 +3,10 @@ export type AssetType = "ETF" | "Stock" | "Mutual Fund" | "Index";
 export type PricePoint = {
   date: string;
   close: number;
+  open?: number;
+  high?: number;
+  low?: number;
+  volume?: number;
 };
 
 export type Holding = {

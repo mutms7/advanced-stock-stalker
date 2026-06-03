@@ -12,7 +12,7 @@ const PROVIDER_TIMEOUT_MS = 8_000;
 const SEARCH_QUERY_PATTERN = /^[A-Za-z0-9 .,&'()+/^:-]*$/;
 const SYMBOL_PATTERN = /^(?:\^[A-Z0-9][A-Z0-9.-]{0,18}|[A-Z0-9][A-Z0-9.-]{0,19})$/;
 
-export type MarketDataProviderName = "mock" | "fmp" | "alpha_vantage";
+export type MarketDataProviderName = "mock" | "polygon" | "fmp" | "alpha_vantage";
 
 type SearchOptions = {
   limit?: number;
@@ -20,6 +20,7 @@ type SearchOptions = {
 
 type MarketDataProviderConfig = {
   provider: MarketDataProviderName;
+  polygonApiKey?: string;
   fmpApiKey?: string;
   alphaVantageApiKey?: string;
 };
@@ -154,7 +155,10 @@ export async function searchInstruments(query: string, options: SearchOptions = 
   return readThroughCache(cacheKey, SEARCH_CACHE_TTL_MS, () => provider.search(normalizedQuery, { limit }));
 }
 
-export async function getInstrumentDetail(symbol: string): Promise<InstrumentDetail | null> {
+export async function getInstrumentDetail(
+  symbol: string,
+  options: { bypassCache?: boolean } = {}
+): Promise<InstrumentDetail | null> {
   const normalizedSymbol = safeParseInstrumentSymbol(symbol);
 
   if (!normalizedSymbol) {
@@ -163,6 +167,10 @@ export async function getInstrumentDetail(symbol: string): Promise<InstrumentDet
 
   const provider = getConfiguredProvider();
   const cacheKey = `${provider.name}:detail:${normalizedSymbol}`;
+
+  if (options.bypassCache) {
+    return provider.getDetail(normalizedSymbol);
+  }
 
   return readThroughCache(cacheKey, DETAIL_CACHE_TTL_MS, () => provider.getDetail(normalizedSymbol));
 }
@@ -205,6 +213,77 @@ class MockMarketDataProvider implements MarketDataProvider {
 
 const mockProvider = new MockMarketDataProvider();
 
+class PolygonMarketDataProvider implements MarketDataProvider {
+  readonly name: MarketDataProviderName = "polygon";
+
+  constructor(private readonly apiKey: string) {}
+
+  async search(query: string, options: SearchOptions = {}) {
+    if (!query) {
+      return mockProvider.search(query, options);
+    }
+
+    const url = this.createUrl("/v3/reference/tickers", {
+      active: "true",
+      limit: String(normalizeLimit(options.limit, DEFAULT_SEARCH_LIMIT)),
+      market: "stocks",
+      search: query
+    });
+    const payload = await fetchProviderJson<unknown>(url, this.name);
+
+    return asArray(asRecord(payload)?.results)
+      .map(mapPolygonSearchResult)
+      .filter(isInstrumentDetail);
+  }
+
+  async getDetail(symbol: string) {
+    const today = formatProviderDate(new Date());
+    const [overviewResult, snapshotResult, historyResult] = await Promise.allSettled([
+      fetchProviderJson<unknown>(this.createUrl(`/v3/reference/tickers/${encodeURIComponent(symbol)}`), this.name),
+      fetchProviderJson<unknown>(
+        this.createUrl(`/v2/snapshot/locale/us/markets/stocks/tickers/${encodeURIComponent(symbol)}`),
+        this.name
+      ),
+      fetchProviderJson<unknown>(
+        this.createUrl(`/v2/aggs/ticker/${encodeURIComponent(symbol)}/range/1/day/1980-01-01/${today}`, {
+          adjusted: "true",
+          limit: "50000",
+          sort: "asc"
+        }),
+        this.name
+      )
+    ]);
+
+    throwIfAllRejected([overviewResult, snapshotResult, historyResult], this.name);
+
+    const overview = asRecord(asRecord(getSettledValue(overviewResult))?.results);
+    const snapshot = asRecord(asRecord(getSettledValue(snapshotResult))?.ticker);
+    const history = mapPolygonHistory(getSettledValue(historyResult));
+
+    if (!overview && !snapshot && !history.length) {
+      return null;
+    }
+
+    return mapPolygonDetail(symbol, overview, snapshot, history);
+  }
+
+  getFeaturedIndexFunds() {
+    return mockProvider.getFeaturedIndexFunds();
+  }
+
+  private createUrl(path: string, params: Record<string, string> = {}) {
+    const url = new URL(`https://api.polygon.io${path}`);
+
+    for (const [key, value] of Object.entries(params)) {
+      url.searchParams.set(key, value);
+    }
+
+    url.searchParams.set("apiKey", this.apiKey);
+
+    return url;
+  }
+}
+
 class FmpMarketDataProvider implements MarketDataProvider {
   readonly name: MarketDataProviderName = "fmp";
 
@@ -231,7 +310,7 @@ class FmpMarketDataProvider implements MarketDataProvider {
     const [quoteResult, profileResult, historyResult] = await Promise.allSettled([
       fetchProviderJson<unknown>(this.createUrl(`quote/${encodeURIComponent(symbol)}`), this.name),
       fetchProviderJson<unknown>(this.createUrl(`profile/${encodeURIComponent(symbol)}`), this.name),
-      fetchProviderJson<unknown>(this.createUrl(`historical-price-full/${encodeURIComponent(symbol)}`, { timeseries: "32" }), this.name)
+      fetchProviderJson<unknown>(this.createUrl(`historical-price-full/${encodeURIComponent(symbol)}`, { timeseries: "5000" }), this.name)
     ]);
 
     throwIfAllRejected([quoteResult, profileResult, historyResult], this.name);
@@ -307,7 +386,7 @@ class AlphaVantageMarketDataProvider implements MarketDataProvider {
       fetchProviderJson<unknown>(
         this.createUrl({
           function: "TIME_SERIES_DAILY",
-          outputsize: "compact",
+          outputsize: "full",
           symbol
         }),
         this.name
@@ -350,6 +429,14 @@ function getConfiguredProvider(): MarketDataProvider {
     return mockProvider;
   }
 
+  if (config.provider === "polygon") {
+    if (!config.polygonApiKey) {
+      throw new MarketDataConfigurationError("Polygon market data is selected but POLYGON_API_KEY is not configured.");
+    }
+
+    return new PolygonMarketDataProvider(config.polygonApiKey);
+  }
+
   if (config.provider === "fmp") {
     if (!config.fmpApiKey) {
       throw new MarketDataConfigurationError("FMP market data is selected but FMP_API_KEY is not configured.");
@@ -373,20 +460,25 @@ function getMarketDataConfig(): MarketDataProviderConfig {
 
   if (!provider) {
     throw new MarketDataConfigurationError(
-      `Unsupported market data provider "${rawProvider}". Use "mock", "fmp", or "alpha_vantage".`
+      `Unsupported market data provider "${rawProvider}". Use "mock", "polygon", "fmp", or "alpha_vantage".`
     );
   }
 
   return {
     provider,
+    polygonApiKey: nonEmptyEnv(process.env.POLYGON_API_KEY),
     fmpApiKey: nonEmptyEnv(process.env.FMP_API_KEY),
     alphaVantageApiKey: nonEmptyEnv(process.env.ALPHA_VANTAGE_API_KEY)
   };
 }
 
 function normalizeProviderName(value: string): MarketDataProviderName | null {
-  if (value === "mock" || value === "fmp") {
+  if (value === "mock" || value === "polygon" || value === "fmp") {
     return value;
+  }
+
+  if (value === "massive") {
+    return "polygon";
   }
 
   if (value === "alpha_vantage" || value === "alpha-vantage" || value === "alphavantage") {
@@ -459,6 +551,67 @@ async function fetchProviderJson<T>(url: URL, provider: MarketDataProviderName) 
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function mapPolygonSearchResult(value: unknown): InstrumentDetail | null {
+  const record = asRecord(value);
+  const symbol = safeParseInstrumentSymbol(stringField(record, "ticker") ?? "");
+
+  if (!symbol) {
+    return null;
+  }
+
+  const name = stringField(record, "name") ?? symbol;
+  const type = inferPolygonAssetType(stringField(record, "type"), stringField(record, "market"));
+  const exchange = stringField(record, "primary_exchange") ?? stringField(record, "market") ?? "Unknown";
+
+  return createLiveInstrumentDetail({
+    symbol,
+    source: "Polygon",
+    name,
+    type,
+    exchange,
+    focus: `${type} search result from Polygon`,
+    summary: `${name} was returned by Polygon ticker search. Quote, company metadata, and long-range OHLCV history are hydrated when the detail endpoint is requested.`
+  });
+}
+
+function mapPolygonDetail(
+  symbol: string,
+  overview: Record<string, unknown> | null,
+  snapshot: Record<string, unknown> | null,
+  history: PricePoint[]
+) {
+  const day = asRecord(snapshot?.day);
+  const lastTrade = asRecord(snapshot?.lastTrade) ?? asRecord(snapshot?.last_trade);
+  const previousDay = asRecord(snapshot?.prevDay) ?? asRecord(snapshot?.prev_day);
+  const latestHistoryClose = history.at(-1)?.close;
+  const price = numberField(lastTrade, "p") ?? numberField(day, "c") ?? latestHistoryClose;
+  const previousClose = numberField(previousDay, "c");
+  const changePercent =
+    percentagePointsToRatio(numberField(snapshot, "todaysChangePerc") ?? numberField(snapshot, "todays_change_percent")) ??
+    calculateChangePercent(price, previousClose);
+  const name = stringField(overview, "name") ?? stringField(snapshot, "ticker") ?? symbol;
+  const industry = stringField(overview, "sic_description");
+  const market = stringField(overview, "market");
+  const type = inferPolygonAssetType(stringField(overview, "type"), market);
+  const locale = stringField(overview, "locale");
+
+  return createLiveInstrumentDetail({
+    symbol,
+    source: "Polygon",
+    name,
+    type,
+    exchange: stringField(overview, "primary_exchange") ?? market ?? "Unknown",
+    price,
+    changePercent,
+    aum: numberField(overview, "market_cap"),
+    sectors: industry ? [{ label: industry, weight: 1 }] : undefined,
+    regions: locale ? [{ label: locale, weight: 1 }] : undefined,
+    history,
+    focus: compactSentence([industry, market, "Polygon OHLCV history"]),
+    summary: stringField(overview, "description")
+  });
 }
 
 function mapFmpSearchResult(value: unknown): InstrumentDetail | null {
@@ -606,11 +759,35 @@ function createLiveInstrumentDetail(input: LiveInstrumentInput): InstrumentDetai
   };
 }
 
+function mapPolygonHistory(payload: unknown): PricePoint[] {
+  return asArray(asRecord(payload)?.results)
+    .map((row): PricePoint | null => {
+      const record = asRecord(row);
+      const timestamp = numberField(record, "t");
+      const close = numberField(record, "c");
+
+      if (!timestamp || close === undefined) {
+        return null;
+      }
+
+      return {
+        date: new Date(timestamp).toISOString(),
+        close,
+        open: numberField(record, "o"),
+        high: numberField(record, "h"),
+        low: numberField(record, "l"),
+        volume: numberField(record, "v")
+      };
+    })
+    .filter((point): point is PricePoint => point !== null)
+    .sort(sortPricePointByDate);
+}
+
 function mapFmpHistory(payload: unknown): PricePoint[] {
   const rows = asArray(asRecord(payload)?.historical);
 
   return rows
-    .map((row) => {
+    .map((row): PricePoint | null => {
       const record = asRecord(row);
       const date = stringField(record, "date");
       const close = numberField(record, "close");
@@ -621,12 +798,15 @@ function mapFmpHistory(payload: unknown): PricePoint[] {
 
       return {
         date: normalizeHistoryDate(date),
-        close
+        close,
+        open: numberField(record, "open"),
+        high: numberField(record, "high"),
+        low: numberField(record, "low"),
+        volume: numberField(record, "volume")
       };
     })
-    .filter(isPricePoint)
-    .sort(sortPricePointByDate)
-    .slice(-32);
+    .filter((point): point is PricePoint => point !== null)
+    .sort(sortPricePointByDate);
 }
 
 function mapAlphaVantageHistory(payload: unknown): PricePoint[] {
@@ -637,8 +817,9 @@ function mapAlphaVantageHistory(payload: unknown): PricePoint[] {
   }
 
   return Object.entries(series)
-    .map(([date, value]) => {
-      const close = numberField(asRecord(value), "4. close");
+    .map(([date, value]): PricePoint | null => {
+      const record = asRecord(value);
+      const close = numberField(record, "4. close");
 
       if (close === undefined) {
         return null;
@@ -646,24 +827,31 @@ function mapAlphaVantageHistory(payload: unknown): PricePoint[] {
 
       return {
         date: normalizeHistoryDate(date),
-        close
+        close,
+        open: numberField(record, "1. open"),
+        high: numberField(record, "2. high"),
+        low: numberField(record, "3. low"),
+        volume: numberField(record, "5. volume")
       };
     })
-    .filter(isPricePoint)
-    .sort(sortPricePointByDate)
-    .slice(-32);
+    .filter((point): point is PricePoint => point !== null)
+    .sort(sortPricePointByDate);
 }
 
 function fallbackHistory(price: number): PricePoint[] {
   const close = price > 0 ? price : 1;
   const today = new Date();
 
-  return Array.from({ length: 32 }, (_, index) => {
-    const date = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - (31 - index)));
+  return Array.from({ length: 126 }, (_, index) => {
+    const date = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - (125 - index)));
 
     return {
       date: date.toISOString(),
-      close: Number(close.toFixed(2))
+      close: Number(close.toFixed(2)),
+      open: Number(close.toFixed(2)),
+      high: Number((close * 1.002).toFixed(2)),
+      low: Number((close * 0.998).toFixed(2)),
+      volume: 0
     };
   });
 }
@@ -765,6 +953,14 @@ function percentagePointsToRatio(value: number | undefined) {
   return value === undefined ? undefined : value / 100;
 }
 
+function calculateChangePercent(price: number | undefined, previousClose: number | undefined) {
+  if (!price || !previousClose || previousClose <= 0) {
+    return undefined;
+  }
+
+  return (price - previousClose) / previousClose;
+}
+
 function inferAssetType(value: string | undefined): AssetType {
   const normalized = value?.toLowerCase() ?? "";
 
@@ -783,11 +979,26 @@ function inferAssetType(value: string | undefined): AssetType {
   return "Stock";
 }
 
-function isInstrumentDetail(value: InstrumentDetail | null): value is InstrumentDetail {
-  return value !== null;
+function inferPolygonAssetType(type: string | undefined, market: string | undefined): AssetType {
+  const normalizedType = type?.toLowerCase() ?? "";
+  const normalizedMarket = market?.toLowerCase() ?? "";
+
+  if (normalizedType.includes("etf")) {
+    return "ETF";
+  }
+
+  if (normalizedMarket.includes("indices") || normalizedType.includes("index")) {
+    return "Index";
+  }
+
+  if (normalizedType.includes("fund")) {
+    return "Mutual Fund";
+  }
+
+  return inferAssetType(type);
 }
 
-function isPricePoint(value: PricePoint | null): value is PricePoint {
+function isInstrumentDetail(value: InstrumentDetail | null): value is InstrumentDetail {
   return value !== null;
 }
 
@@ -805,6 +1016,10 @@ function normalizeHistoryDate(value: string) {
   return date.toISOString();
 }
 
+function formatProviderDate(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
 function compactSentence(parts: Array<string | undefined>) {
   return parts.filter(Boolean).join(" / ");
 }
@@ -820,6 +1035,10 @@ function nonEmptyEnv(value: string | undefined) {
 }
 
 function formatProviderName(provider: MarketDataProviderName) {
+  if (provider === "polygon") {
+    return "Polygon";
+  }
+
   if (provider === "fmp") {
     return "FMP";
   }

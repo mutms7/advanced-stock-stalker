@@ -5,7 +5,10 @@ export async function GET(_request: Request, { params }: { params: Promise<{ sym
   try {
     const { symbol } = await params;
     const normalizedSymbol = parseInstrumentSymbol(symbol);
-    const instrument = await getInstrumentDetail(normalizedSymbol);
+    const { searchParams } = new URL(_request.url);
+    const instrument = await getInstrumentDetail(normalizedSymbol, {
+      bypassCache: searchParams.get("refresh") === "1"
+    });
 
     if (!instrument) {
       return NextResponse.json({ error: "Instrument not found" }, { status: 404 });

@@ -12,7 +12,7 @@ A futuristic, dark-mode stock tracker and ETF comparison dashboard for prospecti
 - Prisma schema for instruments, watchlists, ETF holdings, news, and assessments
 - API routes for instrument search, instrument detail, and AI/news assessment
 - Mock-first market and news data so the app runs without paid provider keys
-- Environment hooks for OpenAI, Brave Search, FMP, and Alpha Vantage
+- Environment hooks for OpenAI, Brave Search, Polygon/Massive, FMP, and Alpha Vantage
 
 ## Getting Started
 
@@ -50,6 +50,23 @@ For recent news/search:
 ```env
 NEWS_SEARCH_PROVIDER="brave"
 BRAVE_SEARCH_API_KEY="..."
+```
+
+For long-range historical OHLCV and live quote polling:
+
+```env
+MARKET_DATA_PROVIDER="polygon"
+POLYGON_API_KEY="..."
+```
+
+FMP and Alpha Vantage remain available as REST fallbacks:
+
+```env
+MARKET_DATA_PROVIDER="fmp"
+FMP_API_KEY="..."
+
+MARKET_DATA_PROVIDER="alpha_vantage"
+ALPHA_VANTAGE_API_KEY="..."
 ```
 
 ## Useful Scripts

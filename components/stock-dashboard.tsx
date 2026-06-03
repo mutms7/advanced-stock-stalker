@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   Activity,
   ArrowDownRight,
@@ -47,10 +47,17 @@ const compareCandidates = instruments.filter((instrument) => instrument.type ===
 const chartRanges = ["1M", "3M", "6M", "1Y", "5Y", "MAX"] as const;
 const chartStyles = ["Line", "Area", "Candles"] as const;
 const chartScales = ["Price", "% Change"] as const;
+const chartSizes = ["Compact", "Focus", "Max"] as const;
+const refreshIntervals = [15_000, 30_000, 60_000] as const;
 
 type ChartRange = (typeof chartRanges)[number];
 type ChartStyle = (typeof chartStyles)[number];
 type ChartScale = (typeof chartScales)[number];
+type ChartSize = (typeof chartSizes)[number];
+
+const subscribeWorkspaceReady = () => () => undefined;
+const getWorkspaceReadySnapshot = () => true;
+const getWorkspaceServerSnapshot = () => false;
 
 export function StockDashboard() {
   const [query, setQuery] = useState("");
@@ -72,6 +79,23 @@ export function StockDashboard() {
   const [showGrid, setShowGrid] = useState(true);
   const [showCrosshair, setShowCrosshair] = useState(true);
   const [showChartSettings, setShowChartSettings] = useState(true);
+  const [chartSize, setChartSize] = useState<ChartSize>("Focus");
+  const [showProspects, setShowProspects] = useState(true);
+  const [showResearchRail, setShowResearchRail] = useState(true);
+  const [showMetrics, setShowMetrics] = useState(true);
+  const [showIndexLens, setShowIndexLens] = useState(true);
+  const [showComparison, setShowComparison] = useState(true);
+  const [showExposurePanels, setShowExposurePanels] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [refreshIntervalMs, setRefreshIntervalMs] = useState<(typeof refreshIntervals)[number]>(30_000);
+  const [isHydratingDetail, setIsHydratingDetail] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [lastHydratedAt, setLastHydratedAt] = useState<string | null>(null);
+  const isWorkspaceReady = useSyncExternalStore(
+    subscribeWorkspaceReady,
+    getWorkspaceReadySnapshot,
+    getWorkspaceServerSnapshot
+  );
 
   const compareFunds = useMemo(
     () =>
@@ -85,6 +109,66 @@ export function StockDashboard() {
   const selectedBenchmark = useMemo(() => compareFunds.find((fund) => fund.symbol !== selected.symbol), [compareFunds, selected.symbol]);
   const nextCompareReplacement =
     compareSymbols.length >= maxCompareFunds && !compareSymbols.includes(selected.symbol) ? compareSymbols[0] : null;
+  const prospectsVisible = showProspects && chartSize !== "Max";
+  const researchRailVisible = showResearchRail && chartSize !== "Max";
+  const metricsVisible = showMetrics && chartSize !== "Max";
+  const comparisonVisible = showComparison && chartSize !== "Max";
+  const exposurePanelsVisible = showExposurePanels && chartSize !== "Max";
+  const workspaceGridClass = cn(
+    "grid gap-4",
+    prospectsVisible && researchRailVisible && "xl:grid-cols-[320px_minmax(0,1fr)_390px]",
+    prospectsVisible && !researchRailVisible && "xl:grid-cols-[320px_minmax(0,1fr)]",
+    !prospectsVisible && researchRailVisible && "xl:grid-cols-[minmax(0,1fr)_390px]",
+    !prospectsVisible && !researchRailVisible && "xl:grid-cols-1"
+  );
+
+  const hydrateSelectedDetail = useCallback(
+    async (symbol: string, options: { refresh?: boolean; silent?: boolean } = {}) => {
+      if (!options.silent) {
+        setIsHydratingDetail(true);
+      }
+
+      try {
+        const search = options.refresh ? "?refresh=1" : "";
+        const response = await fetch(`/api/instruments/${encodeURIComponent(symbol)}${search}`);
+        const payload = (await response.json()) as Partial<{ instrument: InstrumentDetail; error: string }>;
+
+        if (!response.ok) {
+          throw new Error(payload.error ?? "Instrument detail service returned an unexpected response.");
+        }
+
+        if (!payload.instrument) {
+          throw new Error("Instrument detail was not available.");
+        }
+
+        const hydratedInstrument = payload.instrument;
+
+        setSelected((current) => (current.symbol === hydratedInstrument.symbol ? hydratedInstrument : current));
+        setDetailError(null);
+        setLastHydratedAt(new Date().toISOString());
+      } catch (error) {
+        setDetailError(error instanceof Error ? error.message : "Instrument detail service is unavailable.");
+      } finally {
+        if (!options.silent) {
+          setIsHydratingDetail(false);
+        }
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!autoRefresh) {
+      return undefined;
+    }
+
+    const refresh = () => {
+      void hydrateSelectedDetail(selected.symbol, { refresh: true, silent: true });
+    };
+    const interval = window.setInterval(refresh, refreshIntervalMs);
+
+    return () => window.clearInterval(interval);
+  }, [autoRefresh, hydrateSelectedDetail, refreshIntervalMs, selected.symbol]);
 
   async function handleSearch(nextQuery = query) {
     const normalizedQuery = nextQuery.trim();
@@ -130,6 +214,8 @@ export function StockDashboard() {
       citations: newsBySymbol[instrument.symbol] ?? newsBySymbol.VOO
     });
     setAssessmentError(null);
+    setDetailError(null);
+    void hydrateSelectedDetail(instrument.symbol);
   }
 
   function handleSelect(instrument: InstrumentDetail) {
@@ -231,7 +317,26 @@ export function StockDashboard() {
             </div>
           </header>
 
-          <section className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)_390px]">
+          <WorkspaceControls
+            chartSize={chartSize}
+            setChartSize={setChartSize}
+            showProspects={showProspects}
+            setShowProspects={setShowProspects}
+            showResearchRail={showResearchRail}
+            setShowResearchRail={setShowResearchRail}
+            showMetrics={showMetrics}
+            setShowMetrics={setShowMetrics}
+            showIndexLens={showIndexLens}
+            setShowIndexLens={setShowIndexLens}
+            showComparison={showComparison}
+            setShowComparison={setShowComparison}
+            showExposurePanels={showExposurePanels}
+            setShowExposurePanels={setShowExposurePanels}
+            isReady={isWorkspaceReady}
+          />
+
+          <section className={workspaceGridClass}>
+            {prospectsVisible ? (
             <Card className="noise-panel focus-rail">
               <CardHeader>
                 <div className="flex items-center justify-between gap-2">
@@ -314,6 +419,7 @@ export function StockDashboard() {
                 )}
               </CardContent>
             </Card>
+            ) : null}
 
             <div className="flex min-w-0 flex-col gap-4">
               <Card className="noise-panel focus-rail overflow-hidden">
@@ -354,7 +460,7 @@ export function StockDashboard() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid gap-3 2xl:grid-cols-[minmax(0,1fr)_280px]">
+                  <div className={cn("grid gap-3", metricsVisible && "2xl:grid-cols-[minmax(0,1fr)_280px]")}>
                     <ChartTerminal
                       instrument={selected}
                       benchmark={showBenchmark ? selectedBenchmark : undefined}
@@ -366,21 +472,36 @@ export function StockDashboard() {
                       showBenchmark={showBenchmark}
                       showGrid={showGrid}
                       showCrosshair={showCrosshair}
+                      size={chartSize}
+                      autoRefresh={autoRefresh}
+                      isHydrating={isHydratingDetail}
+                      lastHydratedAt={lastHydratedAt}
                       onRangeChange={setChartRange}
                       onStyleChange={setChartStyle}
                       onScaleChange={setChartScale}
                       onToggleSettings={() => setShowChartSettings((value) => !value)}
                     />
 
+                    {metricsVisible ? (
                     <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
                       <Metric label="Expense" value={selected.expenseRatio ? formatPercent(selected.expenseRatio) : "n/a"} />
                       <Metric label="Yield" value={selected.dividendYield ? formatPercent(selected.dividendYield) : "n/a"} />
                       <Metric label="AUM" value={selected.aum ? formatCompactCurrency(selected.aum) : "n/a"} />
                       <Metric label="Volatility" value={formatPercent(selected.volatility)} />
                     </div>
+                    ) : null}
                   </div>
+                  {detailError ? (
+                    <div className="mt-3">
+                      <StateNotice icon={<CircleAlert />} title="Detail fallback" tone="warning">
+                        {detailError} The current chart remains available.
+                      </StateNotice>
+                    </div>
+                  ) : null}
                   {showChartSettings ? (
                     <ChartSettingsPanel
+                      chartSize={chartSize}
+                      setChartSize={setChartSize}
                       chartScale={chartScale}
                       setChartScale={setChartScale}
                       showVolume={showVolume}
@@ -393,8 +514,13 @@ export function StockDashboard() {
                       setShowGrid={setShowGrid}
                       showCrosshair={showCrosshair}
                       setShowCrosshair={setShowCrosshair}
+                      autoRefresh={autoRefresh}
+                      setAutoRefresh={setAutoRefresh}
+                      refreshIntervalMs={refreshIntervalMs}
+                      setRefreshIntervalMs={setRefreshIntervalMs}
                     />
                   ) : null}
+                  {showIndexLens ? (
                   <div className="mt-4">
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -409,9 +535,11 @@ export function StockDashboard() {
                       ))}
                     </div>
                   </div>
+                  ) : null}
                 </CardContent>
               </Card>
 
+              {comparisonVisible ? (
               <Card className="focus-rail">
                 <CardHeader className="pb-2">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -541,8 +669,10 @@ export function StockDashboard() {
                   )}
                 </CardContent>
               </Card>
+              ) : null}
             </div>
 
+            {researchRailVisible ? (
             <div className="flex min-w-0 flex-col gap-4">
               <Card className="focus-rail border-primary/25">
                 <CardHeader>
@@ -624,8 +754,10 @@ export function StockDashboard() {
                 </CardContent>
               </Card>
             </div>
+            ) : null}
           </section>
 
+          {exposurePanelsVisible ? (
           <section className="grid gap-4 lg:grid-cols-3">
             <ExposurePanel title="Sector Exposure" icon={<Zap />} exposures={selected.sectors} />
             <ExposurePanel title="Region Exposure" icon={<ShieldCheck />} exposures={selected.regions} />
@@ -651,6 +783,7 @@ export function StockDashboard() {
               </CardContent>
             </Card>
           </section>
+          ) : null}
         </div>
       </main>
     </TooltipProvider>
@@ -666,6 +799,84 @@ type IndexInsight = {
   icon: ReactNode;
   tone: InsightTone;
 };
+
+function WorkspaceControls({
+  chartSize,
+  setChartSize,
+  showProspects,
+  setShowProspects,
+  showResearchRail,
+  setShowResearchRail,
+  showMetrics,
+  setShowMetrics,
+  showIndexLens,
+  setShowIndexLens,
+  showComparison,
+  setShowComparison,
+  showExposurePanels,
+  setShowExposurePanels,
+  isReady
+}: {
+  chartSize: ChartSize;
+  setChartSize: (size: ChartSize) => void;
+  showProspects: boolean;
+  setShowProspects: (value: boolean) => void;
+  showResearchRail: boolean;
+  setShowResearchRail: (value: boolean) => void;
+  showMetrics: boolean;
+  setShowMetrics: (value: boolean) => void;
+  showIndexLens: boolean;
+  setShowIndexLens: (value: boolean) => void;
+  showComparison: boolean;
+  setShowComparison: (value: boolean) => void;
+  showExposurePanels: boolean;
+  setShowExposurePanels: (value: boolean) => void;
+  isReady: boolean;
+}) {
+  return (
+    <div
+      className="focus-rail rounded-lg border border-white/10 bg-background/72 p-3 backdrop-blur-xl"
+      data-ready={isReady ? "true" : "false"}
+      data-testid="workspace-layout"
+      suppressHydrationWarning
+    >
+      <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-primary">
+            <Layers3 className="size-4" />
+          </span>
+          <div>
+            <div className="text-sm font-medium">Workspace Layout</div>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {chartSizes.map((size) => (
+                <Button
+                  key={size}
+                  type="button"
+                  variant={chartSize === size ? "secondary" : "outline"}
+                  size="sm"
+                  aria-pressed={chartSize === size}
+                  data-testid={`workspace-size-${size.toLowerCase()}`}
+                  onClick={() => setChartSize(size)}
+                >
+                  {size}
+                </Button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:w-[780px]">
+          <SettingToggle label="Prospects" checked={showProspects} onChange={setShowProspects} compact />
+          <SettingToggle label="Research" checked={showResearchRail} onChange={setShowResearchRail} compact />
+          <SettingToggle label="Metrics" checked={showMetrics} onChange={setShowMetrics} compact />
+          <SettingToggle label="Index lens" checked={showIndexLens} onChange={setShowIndexLens} compact />
+          <SettingToggle label="Compare" checked={showComparison} onChange={setShowComparison} compact />
+          <SettingToggle label="Exposures" checked={showExposurePanels} onChange={setShowExposurePanels} compact />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function searchLocalInstruments(query: string) {
   const normalized = query.trim().toLowerCase();
@@ -914,6 +1125,10 @@ function ChartTerminal({
   showBenchmark,
   showGrid,
   showCrosshair,
+  size,
+  autoRefresh,
+  isHydrating,
+  lastHydratedAt,
   onRangeChange,
   onStyleChange,
   onScaleChange,
@@ -929,6 +1144,10 @@ function ChartTerminal({
   showBenchmark: boolean;
   showGrid: boolean;
   showCrosshair: boolean;
+  size: ChartSize;
+  autoRefresh: boolean;
+  isHydrating: boolean;
+  lastHydratedAt: string | null;
   onRangeChange: (range: ChartRange) => void;
   onStyleChange: (style: ChartStyle) => void;
   onScaleChange: (scale: ChartScale) => void;
@@ -948,15 +1167,26 @@ function ChartTerminal({
   const latestValue = latest?.close ?? instrument.price;
   const totalChange = first ? (latestValue - first.close) / first.close : instrument.changePercent;
   const averageVolume = points.reduce((total, point) => total + point.volume, 0) / Math.max(points.length, 1);
+  const chartHeightClass = {
+    Compact: "h-[300px] min-h-[300px]",
+    Focus: "h-[430px] min-h-[430px]",
+    Max: "h-[620px] min-h-[620px] md:h-[700px] md:min-h-[700px]"
+  } satisfies Record<ChartSize, string>;
+  const sideRailClass = cn("grid gap-2 sm:grid-cols-3", size === "Max" ? "2xl:grid-cols-3" : "xl:grid-cols-1");
+  const lastRefreshLabel = lastHydratedAt ? formatClock(lastHydratedAt) : "pending";
 
   return (
     <div className="rounded-lg border border-white/10 bg-[#080b0b] p-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="warning">Mock feed</Badge>
+            <Badge variant={instrument.history.length > 126 ? "default" : "warning"}>
+              {instrument.history.length > 126 ? `${instrument.history.length} history bars` : "Mock feed"}
+            </Badge>
+            <Badge variant={autoRefresh ? "magenta" : "outline"}>{autoRefresh ? "Live pulse" : "Manual"}</Badge>
             <Badge variant="outline">{range}</Badge>
             {showBenchmark && benchmark ? <Badge variant="secondary">Benchmark: {benchmark.symbol}</Badge> : null}
+            {isHydrating ? <Badge variant="secondary">hydrating</Badge> : null}
           </div>
           <div className="mt-3 flex flex-wrap items-end gap-3">
             <div>
@@ -965,6 +1195,7 @@ function ChartTerminal({
             </div>
             <ChangePill value={totalChange} large />
           </div>
+          <p className="mt-2 text-xs text-muted-foreground">Last refresh {lastRefreshLabel}</p>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -1011,11 +1242,11 @@ function ChartTerminal({
         ))}
       </div>
 
-      <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_120px]">
-        <div className="relative min-h-[360px] overflow-hidden rounded-md border border-white/10 bg-background/35 p-3">
+      <div className={cn("mt-4 grid gap-3", size === "Max" ? "2xl:grid-cols-[minmax(0,1fr)_180px]" : "xl:grid-cols-[minmax(0,1fr)_120px]")}>
+        <div className={cn("relative overflow-hidden rounded-md border border-white/10 bg-background/35 p-3", chartHeightClass[size])}>
           <svg
             viewBox="0 0 100 100"
-            className="h-[360px] w-full overflow-visible"
+            className="h-full w-full overflow-visible"
             preserveAspectRatio="none"
             role="img"
             aria-label={`${instrument.symbol} ${range} ${style.toLowerCase()} price chart`}
@@ -1137,7 +1368,7 @@ function ChartTerminal({
           </div>
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-1">
+        <div className={sideRailClass}>
           <Metric label="Range Return" value={formatPercent(totalChange, { signed: true })} />
           <Metric label="Avg Volume" value={formatCompactNumber(averageVolume)} />
           <Metric label="Chart Scale" value={scale} />
@@ -1148,6 +1379,8 @@ function ChartTerminal({
 }
 
 function ChartSettingsPanel({
+  chartSize,
+  setChartSize,
   chartScale,
   setChartScale,
   showVolume,
@@ -1159,8 +1392,14 @@ function ChartSettingsPanel({
   showGrid,
   setShowGrid,
   showCrosshair,
-  setShowCrosshair
+  setShowCrosshair,
+  autoRefresh,
+  setAutoRefresh,
+  refreshIntervalMs,
+  setRefreshIntervalMs
 }: {
+  chartSize: ChartSize;
+  setChartSize: (size: ChartSize) => void;
   chartScale: ChartScale;
   setChartScale: (scale: ChartScale) => void;
   showVolume: boolean;
@@ -1173,6 +1412,10 @@ function ChartSettingsPanel({
   setShowGrid: (value: boolean) => void;
   showCrosshair: boolean;
   setShowCrosshair: (value: boolean) => void;
+  autoRefresh: boolean;
+  setAutoRefresh: (value: boolean) => void;
+  refreshIntervalMs: (typeof refreshIntervals)[number];
+  setRefreshIntervalMs: (value: (typeof refreshIntervals)[number]) => void;
 }) {
   return (
     <div className="mt-3 rounded-lg border border-white/10 bg-background/45 p-3">
@@ -1186,6 +1429,17 @@ function ChartSettingsPanel({
         </div>
 
         <div className="flex flex-wrap gap-2">
+          {chartSizes.map((size) => (
+            <Button
+              key={size}
+              type="button"
+              variant={chartSize === size ? "secondary" : "outline"}
+              size="sm"
+              onClick={() => setChartSize(size)}
+            >
+              {size}
+            </Button>
+          ))}
           {chartScales.map((scale) => (
             <Button
               key={scale}
@@ -1207,6 +1461,23 @@ function ChartSettingsPanel({
         <SettingToggle label="Grid lines" checked={showGrid} onChange={setShowGrid} />
         <SettingToggle label="Crosshair" checked={showCrosshair} onChange={setShowCrosshair} />
       </div>
+
+      <div className="mt-3 flex flex-col gap-2 rounded-md border border-white/10 bg-background/35 p-3 lg:flex-row lg:items-center lg:justify-between">
+        <SettingToggle label="Live pulse" checked={autoRefresh} onChange={setAutoRefresh} compact />
+        <div className="flex flex-wrap gap-2">
+          {refreshIntervals.map((interval) => (
+            <Button
+              key={interval}
+              type="button"
+              variant={refreshIntervalMs === interval ? "secondary" : "outline"}
+              size="sm"
+              onClick={() => setRefreshIntervalMs(interval)}
+            >
+              {interval / 1000}s
+            </Button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1214,11 +1485,13 @@ function ChartSettingsPanel({
 function SettingToggle({
   label,
   checked,
-  onChange
+  onChange,
+  compact = false
 }: {
   label: string;
   checked: boolean;
   onChange: (value: boolean) => void;
+  compact?: boolean;
 }) {
   return (
     <button
@@ -1226,7 +1499,8 @@ function SettingToggle({
       aria-pressed={checked}
       onClick={() => onChange(!checked)}
       className={cn(
-        "flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-left text-sm transition",
+        "flex items-center justify-between gap-3 rounded-md border px-3 text-left text-sm transition",
+        compact ? "py-1.5" : "py-2",
         checked ? "border-primary/35 bg-primary/10 text-foreground" : "border-border bg-background/35 text-muted-foreground"
       )}
     >
@@ -1245,6 +1519,16 @@ function SettingToggle({
 
 function buildChartPoints(instrument: InstrumentDetail, range: ChartRange): ChartPoint[] {
   const count = rangeToPointCount(range);
+  const historicalPoints = normalizeHistoricalChartPoints(instrument);
+
+  if (historicalPoints.length) {
+    const rangePoints = range === "MAX" ? historicalPoints : historicalPoints.slice(-count);
+
+    if (rangePoints.length >= Math.min(count, 8)) {
+      return rangePoints;
+    }
+  }
+
   const seed = symbolSeed(instrument.symbol);
   const history = instrument.history.length ? instrument.history : [{ close: instrument.price, date: new Date().toISOString() }];
   const firstHistorical = history[0]?.close ?? instrument.price;
@@ -1279,6 +1563,43 @@ function buildChartPoints(instrument: InstrumentDetail, range: ChartRange): Char
       volume: Math.round(volume)
     };
   });
+}
+
+function normalizeHistoricalChartPoints(instrument: InstrumentDetail): ChartPoint[] {
+  const seed = symbolSeed(instrument.symbol);
+  const volumeBase = instrument.type === "ETF" ? 1_800_000 : 42_000_000;
+  let previousClose = (instrument.history[0]?.close ?? instrument.price) || 1;
+
+  return instrument.history
+    .map((point, index) => {
+      const date = new Date(point.date);
+      const close = point.close;
+
+      if (!Number.isFinite(date.getTime()) || !Number.isFinite(close) || close <= 0) {
+        return null;
+      }
+
+      const open = point.open && point.open > 0 ? point.open : previousClose;
+      const high = point.high && point.high > 0 ? point.high : Math.max(open, close);
+      const low = point.low && point.low > 0 ? point.low : Math.min(open, close);
+      const volume =
+        point.volume && point.volume > 0
+          ? point.volume
+          : volumeBase * (1 + Math.abs(Math.sin((index + seed) / 5)) * 1.8 + Math.max(instrument.volatility, 0.03) * 2);
+
+      previousClose = close;
+
+      return {
+        date,
+        close: Number(close.toFixed(2)),
+        open: Number(open.toFixed(2)),
+        high: Number(high.toFixed(2)),
+        low: Number(low.toFixed(2)),
+        volume: Math.round(volume)
+      };
+    })
+    .filter((point): point is ChartPoint => Boolean(point))
+    .sort((left, right) => left.date.getTime() - right.date.getTime());
 }
 
 function buildChartGeometry(points: ChartPoint[], scale: ChartScale, benchmarkPoints: ChartPoint[]) {
@@ -1396,6 +1717,20 @@ function formatChartDate(date: Date) {
     month: "short",
     day: "numeric",
     year: "2-digit"
+  }).format(date);
+}
+
+function formatClock(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "pending";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit"
   }).format(date);
 }
 
