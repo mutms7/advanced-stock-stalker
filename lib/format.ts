@@ -15,6 +15,14 @@ export function formatCompactCurrency(value: number) {
   }).format(value);
 }
 
+export function formatCadCurrency(value: number) {
+  return new Intl.NumberFormat("en-CA", {
+    style: "currency",
+    currency: "CAD",
+    maximumFractionDigits: value > 1000 ? 0 : 2
+  }).format(value);
+}
+
 export function formatPercent(value: number, options?: { signed?: boolean }) {
   const formatted = new Intl.NumberFormat("en-US", {
     style: "percent",

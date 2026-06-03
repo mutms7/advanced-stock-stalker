@@ -32,6 +32,32 @@ test.describe("dashboard smoke", () => {
     await expect(page.getByText("News plus a plain-English view.")).toBeHidden();
   });
 
+  test("shows CAD chart details on hover and updates the active range", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("workspace-layout")).toHaveAttribute("data-ready", "true");
+
+    const chartPanel = page.getByTestId("price-chart-panel");
+    await chartPanel.evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest" }));
+    const firstBox = await chartPanel.boundingBox();
+    expect(firstBox).not.toBeNull();
+    await page.mouse.move(firstBox.x + firstBox.width * 0.48, firstBox.y + firstBox.height * 0.42);
+
+    await expect(page.getByTestId("chart-hover-card")).toBeVisible();
+    await expect(page.getByTestId("chart-hover-card")).toContainText("Price in CAD");
+    await expect(page.getByTestId("chart-hover-card")).toContainText("1Y range");
+    await expect(page.getByText("High (CAD)")).toBeVisible();
+    await expect(page.getByText("Low (CAD)")).toBeVisible();
+
+    await page.getByRole("button", { name: "5Y" }).click();
+    await chartPanel.evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest" }));
+    const secondBox = await chartPanel.boundingBox();
+    expect(secondBox).not.toBeNull();
+    await page.mouse.move(secondBox.x + secondBox.width * 0.55, secondBox.y + secondBox.height * 0.42);
+
+    await expect(page.getByTestId("chart-hover-card")).toContainText("5Y range");
+    await expect(page.getByText(/^5Y range:/)).toBeVisible();
+  });
+
   test("can drag a panel into and out of the dock", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByTestId("workspace-layout")).toHaveAttribute("data-ready", "true");

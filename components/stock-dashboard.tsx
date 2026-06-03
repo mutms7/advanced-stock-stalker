@@ -3,6 +3,7 @@
 import {
   type CSSProperties,
   type DragEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -43,7 +44,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { formatCompactCurrency, formatCurrency, formatPercent } from "@/lib/format";
+import { formatCadCurrency, formatCompactCurrency, formatCurrency, formatPercent } from "@/lib/format";
 import { instruments, mockAssessment, newsBySymbol } from "@/lib/mock-data";
 import type { Assessment, InstrumentDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -58,6 +59,7 @@ const chartStyles = ["Line", "Area", "Candles"] as const;
 const chartScales = ["Price", "% Change"] as const;
 const chartSizes = ["Compact", "Focus", "Max"] as const;
 const refreshIntervals = [15_000, 30_000, 60_000] as const;
+const estimatedUsdToCadRate = 1.37;
 const workspacePanels = [
   { id: "prospects", label: "List" },
   { id: "research", label: "Quick Take" },
@@ -1394,6 +1396,15 @@ function Metric({ label, value, icon }: { label: string; value: string; icon?: R
   );
 }
 
+function TooltipMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1.5">
+      <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
+      <div className="mt-0.5 font-mono text-[12px] text-foreground">{value}</div>
+    </div>
+  );
+}
+
 type ChartPoint = {
   date: Date;
   close: number;
@@ -1401,6 +1412,13 @@ type ChartPoint = {
   high: number;
   low: number;
   volume: number;
+};
+
+type ChartPlotPoint = {
+  x: number;
+  y: number;
+  point: ChartPoint;
+  value: number;
 };
 
 function ChartTerminal({
@@ -1442,27 +1460,78 @@ function ChartTerminal({
   onScaleChange: (scale: ChartScale) => void;
   onToggleSettings: () => void;
 }) {
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const points = useMemo(() => buildChartPoints(instrument, range), [instrument, range]);
   const benchmarkPoints = useMemo(
     () => (benchmark ? buildChartPoints(benchmark, range) : []),
     [benchmark, range]
   );
+  const cadMultiplier = getCadPriceMultiplier(instrument);
   const chart = useMemo(
-    () => buildChartGeometry(points, scale, benchmarkPoints),
-    [points, scale, benchmarkPoints]
+    () => buildChartGeometry(points, scale, benchmarkPoints, cadMultiplier),
+    [points, scale, benchmarkPoints, cadMultiplier]
   );
   const latest = points.at(-1);
   const first = points[0];
   const latestValue = latest?.close ?? instrument.price;
   const totalChange = first ? (latestValue - first.close) / first.close : instrument.changePercent;
   const averageVolume = points.reduce((total, point) => total + point.volume, 0) / Math.max(points.length, 1);
+  const rangeHigh = Math.max(...points.map((point) => point.high), latestValue);
+  const rangeLow = Math.min(...points.map((point) => point.low), latestValue);
+  const lastChartIndex = Math.max(chart.linePoints.length - 1, 0);
+  const isHoveringChart = hoverIndex !== null && chart.linePoints.length > 0;
+  const activeIndex = isHoveringChart ? clamp(hoverIndex, 0, lastChartIndex) : lastChartIndex;
+  const activePoint = chart.linePoints[activeIndex] ?? chart.lastPoint;
+  const activeBenchmarkIndex =
+    activePoint && chart.benchmarkLinePoints.length
+      ? clamp(
+          Math.round((activeIndex / Math.max(chart.linePoints.length - 1, 1)) * (chart.benchmarkLinePoints.length - 1)),
+          0,
+          chart.benchmarkLinePoints.length - 1
+        )
+      : null;
+  const activeBenchmarkPoint = activeBenchmarkIndex === null ? null : chart.benchmarkLinePoints[activeBenchmarkIndex];
+  const activePriceCad = activePoint ? toCadPrice(activePoint.point.close, instrument) : toCadPrice(latestValue, instrument);
+  const activeReturn = activePoint && first ? (activePoint.point.close - first.close) / first.close : totalChange;
+  const activeDayChange =
+    activePoint && activePoint.point.open ? (activePoint.point.close - activePoint.point.open) / activePoint.point.open : 0;
+  const rangeLabel = first && latest ? `${formatLongChartDate(first.date)} - ${formatLongChartDate(latest.date)}` : range;
+  const tooltipStyle =
+    activePoint && isHoveringChart
+      ? ({
+          left: `${activePoint.x}%`,
+          top: `${clamp(activePoint.y, 14, 78)}%`,
+          transform: activePoint.x > 62 ? "translate(-104%, -50%)" : "translate(12px, -50%)"
+        } satisfies CSSProperties)
+      : undefined;
   const chartHeightClass = {
     Compact: "h-[300px] min-h-[300px]",
     Focus: "h-[430px] min-h-[430px]",
     Max: "h-[620px] min-h-[620px] md:h-[700px] md:min-h-[700px]"
   } satisfies Record<ChartSize, string>;
-  const sideRailClass = cn("grid gap-2 sm:grid-cols-3", size === "Max" ? "2xl:grid-cols-3" : "xl:grid-cols-1");
+  const sideRailClass = cn("grid gap-2 sm:grid-cols-2", size === "Max" ? "2xl:grid-cols-2" : "xl:grid-cols-1");
   const lastRefreshLabel = lastHydratedAt ? formatClock(lastHydratedAt) : "pending";
+
+  function handleChartPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!chart.linePoints.length) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+
+    if (!rect.width) {
+      return;
+    }
+
+    const relativeX = ((event.clientX - rect.left) / rect.width) * 100;
+    const nextIndex = clamp(
+      Math.round(((relativeX - 8) / 84) * (chart.linePoints.length - 1)),
+      0,
+      chart.linePoints.length - 1
+    );
+
+    setHoverIndex(nextIndex);
+  }
 
   return (
     <div className="rounded-lg border border-white/10 bg-[#080b0b] p-3">
@@ -1481,6 +1550,9 @@ function ChartTerminal({
             <div>
               <p className="text-sm text-muted-foreground">Last price</p>
               <p className="text-4xl font-semibold tracking-normal">{formatCurrency(latestValue)}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {formatCadCurrency(toCadPrice(latestValue, instrument))} CAD - {getCadPriceNote(instrument)}
+              </p>
             </div>
             <ChangePill value={totalChange} large />
           </div>
@@ -1530,9 +1602,17 @@ function ChartTerminal({
           </Button>
         ))}
       </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        {range} range: {rangeLabel}. Hover the chart for the exact date, CAD price, return, and volume.
+      </p>
 
       <div className={cn("mt-4 grid gap-3", size === "Max" ? "2xl:grid-cols-[minmax(0,1fr)_180px]" : "xl:grid-cols-[minmax(0,1fr)_120px]")}>
-        <div className={cn("relative overflow-hidden rounded-md border border-white/10 bg-background/35 p-3", chartHeightClass[size])}>
+        <div
+          className={cn("relative overflow-visible rounded-md border border-white/10 bg-background/35 p-3", chartHeightClass[size])}
+          data-testid="price-chart-panel"
+          onPointerMove={handleChartPointerMove}
+          onPointerLeave={() => setHoverIndex(null)}
+        >
           <svg
             viewBox="0 0 100 100"
             className="h-full w-full overflow-visible"
@@ -1632,24 +1712,71 @@ function ChartTerminal({
               />
             ) : null}
 
-            {showCrosshair && chart.lastPoint ? (
+            {showCrosshair && activePoint ? (
               <g>
                 <line
-                  x1={chart.lastPoint.x}
-                  x2={chart.lastPoint.x}
+                  x1={activePoint.x}
+                  x2={activePoint.x}
                   y1="10"
                   y2="96"
-                  stroke="rgba(255,255,255,0.12)"
+                  stroke={isHoveringChart ? "rgba(245,196,81,0.45)" : "rgba(255,255,255,0.12)"}
                   strokeWidth="0.5"
                 />
-                <circle cx={chart.lastPoint.x} cy={chart.lastPoint.y} r="1.6" fill="#f5c451" />
+                <line
+                  x1="8"
+                  x2="92"
+                  y1={activePoint.y}
+                  y2={activePoint.y}
+                  stroke={isHoveringChart ? "rgba(245,196,81,0.32)" : "rgba(255,255,255,0.08)"}
+                  strokeWidth="0.5"
+                />
+                <circle cx={activePoint.x} cy={activePoint.y} r={isHoveringChart ? "2.1" : "1.6"} fill="#f5c451" />
               </g>
             ) : null}
+
+            <rect
+              data-testid="price-chart-hit-area"
+              x="0"
+              y="0"
+              width="100"
+              height="100"
+              fill="transparent"
+              pointerEvents="all"
+            />
           </svg>
 
           <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-white/10 bg-background/75 px-2 py-1 text-xs text-muted-foreground backdrop-blur">
             {chart.yLabels[2]} / {chart.yLabels[1]} / {chart.yLabels[0]}
           </div>
+          {activePoint && tooltipStyle ? (
+            <div
+              data-testid="chart-hover-card"
+              className="pointer-events-none absolute z-10 min-w-[230px] max-w-[260px] rounded-md border border-primary/30 bg-[#07100f]/95 p-3 text-xs shadow-2xl shadow-black/30 backdrop-blur"
+              style={tooltipStyle}
+            >
+              <div className="flex items-center justify-between gap-3 text-muted-foreground">
+                <span>{formatLongChartDate(activePoint.point.date)}</span>
+                <span className="rounded-md border border-white/10 px-1.5 py-0.5 font-mono">{range} range</span>
+              </div>
+              <div className="mt-2 text-[10px] font-semibold uppercase text-muted-foreground">Price in CAD</div>
+              <div className="mt-0.5 text-xl font-semibold tracking-normal text-foreground">
+                {formatCadCurrency(activePriceCad)}
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <TooltipMetric label="Return" value={formatPercent(activeReturn, { signed: true })} />
+                <TooltipMetric label="Day" value={formatPercent(activeDayChange, { signed: true })} />
+                <TooltipMetric label="Volume" value={formatCompactNumber(activePoint.point.volume)} />
+                {activeBenchmarkPoint ? (
+                  <TooltipMetric label="Benchmark" value={formatPercent(activeBenchmarkPoint.value / 100, { signed: true })} />
+                ) : (
+                  <TooltipMetric label="Close" value={formatCurrency(activePoint.point.close)} />
+                )}
+              </div>
+              <div className="mt-2 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-muted-foreground">
+                {getCadPriceNote(instrument)}
+              </div>
+            </div>
+          ) : null}
           <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
             <span>{chart.xLabels[0]}</span>
             <span>{chart.xLabels[1]}</span>
@@ -1658,9 +1785,10 @@ function ChartTerminal({
         </div>
 
         <div className={sideRailClass}>
-          <Metric label="Range Return" value={formatPercent(totalChange, { signed: true })} />
+          <Metric label={`${range} Return`} value={formatPercent(totalChange, { signed: true })} />
+          <Metric label="High (CAD)" value={formatCadCurrency(toCadPrice(rangeHigh, instrument))} />
+          <Metric label="Low (CAD)" value={formatCadCurrency(toCadPrice(rangeLow, instrument))} />
           <Metric label="Avg Volume" value={formatCompactNumber(averageVolume)} />
-          <Metric label="Chart Scale" value={scale} />
         </div>
       </div>
     </div>
@@ -1891,7 +2019,12 @@ function normalizeHistoricalChartPoints(instrument: InstrumentDetail): ChartPoin
     .sort((left, right) => left.date.getTime() - right.date.getTime());
 }
 
-function buildChartGeometry(points: ChartPoint[], scale: ChartScale, benchmarkPoints: ChartPoint[]) {
+function buildChartGeometry(
+  points: ChartPoint[],
+  scale: ChartScale,
+  benchmarkPoints: ChartPoint[],
+  cadPriceMultiplier: number
+) {
   const scaled = toScaledValues(points, scale);
   const benchmarkScaled = benchmarkPoints.length ? toScaledValues(benchmarkPoints, "% Change") : [];
   const allValues = [...scaled.map((point) => point.value), ...benchmarkScaled.map((point) => point.value)];
@@ -1903,15 +2036,24 @@ function buildChartGeometry(points: ChartPoint[], scale: ChartScale, benchmarkPo
   const domainRange = Math.max(domainMax - domainMin, 1);
   const yFor = (value: number) => 82 - ((value - domainMin) / domainRange) * 70;
   const xFor = (index: number, length: number) => 8 + (index / Math.max(length - 1, 1)) * 84;
-  const linePoints = scaled.map((point, index) => ({ x: xFor(index, scaled.length), y: yFor(point.value), point }));
+  const linePoints: ChartPlotPoint[] = scaled.map((point, index) => ({
+    x: xFor(index, scaled.length),
+    y: yFor(point.value),
+    point: point.point,
+    value: point.value
+  }));
   const linePath = linePoints.map((point) => `${point.x},${point.y}`).join(" ");
   const movingAveragePath = movingAverage(scaled.map((point) => point.value), 12)
     .map((value, index) => (value === null ? null : `${xFor(index, scaled.length)},${yFor(value)}`))
     .filter((value): value is string => Boolean(value))
     .join(" ");
-  const benchmarkPath = benchmarkScaled
-    .map((point, index) => `${xFor(index, benchmarkScaled.length)},${yFor(point.value)}`)
-    .join(" ");
+  const benchmarkLinePoints: ChartPlotPoint[] = benchmarkScaled.map((point, index) => ({
+    x: xFor(index, benchmarkScaled.length),
+    y: yFor(point.value),
+    point: point.point,
+    value: point.value
+  }));
+  const benchmarkPath = benchmarkLinePoints.map((point) => `${point.x},${point.y}`).join(" ");
   const maxVolume = Math.max(...points.map((point) => point.volume), 1);
   const volumeStep = Math.max(1, Math.ceil(points.length / 64));
   const volumeBars = points
@@ -1940,13 +2082,17 @@ function buildChartGeometry(points: ChartPoint[], scale: ChartScale, benchmarkPo
 
   return {
     linePath,
+    linePoints,
     areaPath: linePath,
     movingAveragePath,
     benchmarkPath,
+    benchmarkLinePoints,
     candles,
     volumeBars,
     lastPoint: linePoints.at(-1),
-    yLabels: [domainMin, (domainMin + domainMax) / 2, domainMax].map((value) => formatChartAxis(value, scale)),
+    yLabels: [domainMin, (domainMin + domainMax) / 2, domainMax].map((value) =>
+      formatChartAxis(value, scale, cadPriceMultiplier)
+    ),
     xLabels: [points[0], points[Math.floor(points.length / 2)], points.at(-1)].map((point) =>
       point ? formatChartDate(point.date) : ""
     )
@@ -1993,12 +2139,12 @@ function symbolSeed(symbol: string) {
   return symbol.split("").reduce((total, char) => total + char.charCodeAt(0), 0);
 }
 
-function formatChartAxis(value: number, scale: ChartScale) {
+function formatChartAxis(value: number, scale: ChartScale, cadPriceMultiplier = 1) {
   if (scale === "% Change") {
     return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
   }
 
-  return value >= 100 ? `$${value.toFixed(0)}` : `$${value.toFixed(2)}`;
+  return formatCadCurrency(value * cadPriceMultiplier);
 }
 
 function formatChartDate(date: Date) {
@@ -2006,6 +2152,14 @@ function formatChartDate(date: Date) {
     month: "short",
     day: "numeric",
     year: "2-digit"
+  }).format(date);
+}
+
+function formatLongChartDate(date: Date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
   }).format(date);
 }
 
@@ -2028,6 +2182,37 @@ function formatCompactNumber(value: number) {
     notation: "compact",
     maximumFractionDigits: 1
   }).format(value);
+}
+
+function getCadPriceMultiplier(instrument: InstrumentDetail) {
+  return isCadListedInstrument(instrument) ? 1 : estimatedUsdToCadRate;
+}
+
+function toCadPrice(value: number, instrument: InstrumentDetail) {
+  return value * getCadPriceMultiplier(instrument);
+}
+
+function getCadPriceNote(instrument: InstrumentDetail) {
+  return isCadListedInstrument(instrument)
+    ? "CAD-listed price"
+    : `Estimated at ${estimatedUsdToCadRate.toFixed(2)} USD/CAD`;
+}
+
+function isCadListedInstrument(instrument: InstrumentDetail) {
+  const exchange = instrument.exchange.toLowerCase();
+  const symbol = instrument.symbol.toUpperCase();
+
+  return (
+    symbol.endsWith(".TO") ||
+    symbol === "XEQT" ||
+    exchange.includes("toronto") ||
+    exchange.includes("tsx") ||
+    exchange.includes("neo")
+  );
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function DirectionBadge({ direction }: { direction: Assessment["direction"] }) {
