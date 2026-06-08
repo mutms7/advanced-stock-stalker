@@ -8,6 +8,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore
 } from "react";
@@ -46,6 +47,19 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatCadCurrency, formatCompactCurrency, formatCurrency, formatPercent } from "@/lib/format";
 import { instruments, mockAssessment, newsBySymbol } from "@/lib/mock-data";
+import {
+  buildPortfolioAnalytics,
+  buildWatchAlertRows,
+  createDefaultPosition,
+  createDefaultTrackerState,
+  createDefaultWatchAlert,
+  normalizeStoredTrackerState,
+  type PortfolioAnalytics,
+  type TrackerPosition,
+  type TrackerState,
+  type WatchAlert,
+  type WatchAlertRow
+} from "@/lib/tracker";
 import type { Assessment, InstrumentDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -60,6 +74,9 @@ const chartScales = ["Price", "% Change"] as const;
 const chartSizes = ["Compact", "Focus", "Max"] as const;
 const refreshIntervals = [15_000, 30_000, 60_000] as const;
 const estimatedUsdToCadRate = 1.37;
+const trackerStorageKey = "advanced-stock-stalker.tracker.v1";
+const compareStorageKey = "advanced-stock-stalker.compare.v1";
+const trackerClientStorageKey = "advanced-stock-stalker.client.v1";
 const workspacePanels = [
   { id: "prospects", label: "List" },
   { id: "research", label: "Quick Take" },
@@ -73,6 +90,7 @@ type ChartRange = (typeof chartRanges)[number];
 type ChartStyle = (typeof chartStyles)[number];
 type ChartScale = (typeof chartScales)[number];
 type ChartSize = (typeof chartSizes)[number];
+type TrackerPersistenceStatus = "loading" | "local" | "syncing" | "synced" | "error";
 type WorkspacePanelId = (typeof workspacePanels)[number]["id"];
 type WorkspacePanel = {
   id: WorkspacePanelId;
@@ -89,6 +107,10 @@ export function StockDashboard() {
   const [results, setResults] = useState<InstrumentDetail[]>(instruments.slice(0, 7));
   const [selected, setSelected] = useState<InstrumentDetail>(initialInstrument);
   const [compareSymbols, setCompareSymbols] = useState(coreCompareSymbols);
+  const [trackerState, setTrackerState] = useState<TrackerState>(() => createDefaultTrackerState());
+  const [isLocalStateHydrated, setIsLocalStateHydrated] = useState(false);
+  const [trackerPersistence, setTrackerPersistence] = useState<TrackerPersistenceStatus>("loading");
+  const [trackerLastSavedAt, setTrackerLastSavedAt] = useState<string | null>(null);
   const [assessment, setAssessment] = useState<Assessment>(() => mockAssessment(initialInstrument.symbol));
   const [isSearching, setIsSearching] = useState(false);
   const [isAssessing, setIsAssessing] = useState(false);
@@ -119,22 +141,47 @@ export function StockDashboard() {
   const [isHydratingDetail, setIsHydratingDetail] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [lastHydratedAt, setLastHydratedAt] = useState<string | null>(null);
+  const trackerClientIdRef = useRef<string | null>(null);
+  const trackerRemoteAvailableRef = useRef(false);
+  const trackerHasUserEditsRef = useRef(false);
   const isWorkspaceReady = useSyncExternalStore(
     subscribeWorkspaceReady,
     getWorkspaceReadySnapshot,
     getWorkspaceServerSnapshot
   );
 
+  const instrumentUniverse = useMemo(() => mergeInstrumentUniverse([instruments, results, [selected]]), [results, selected]);
+  const instrumentBySymbol = useMemo(
+    () => new Map(instrumentUniverse.map((instrument) => [instrument.symbol, instrument])),
+    [instrumentUniverse]
+  );
   const compareFunds = useMemo(
     () =>
       compareSymbols
-        .map((symbol) => instruments.find((instrument) => instrument.symbol === symbol))
+        .map((symbol) => instrumentBySymbol.get(symbol))
         .filter((instrument): instrument is InstrumentDetail => Boolean(instrument)),
-    [compareSymbols]
+    [compareSymbols, instrumentBySymbol]
   );
 
   const indexInsights = useMemo(() => buildIndexInsights(selected), [selected]);
   const selectedBenchmark = useMemo(() => compareFunds.find((fund) => fund.symbol !== selected.symbol), [compareFunds, selected.symbol]);
+  const portfolioAnalytics = useMemo(
+    () => buildPortfolioAnalytics(trackerState.positions, instrumentBySymbol, getInstrumentCadPrice),
+    [instrumentBySymbol, trackerState.positions]
+  );
+  const watchAlertRows = useMemo(
+    () => buildWatchAlertRows(trackerState.watchlist, trackerState.alerts, instrumentBySymbol, getInstrumentCadPrice),
+    [instrumentBySymbol, trackerState.alerts, trackerState.watchlist]
+  );
+  const selectedPosition = useMemo(
+    () => trackerState.positions.find((position) => position.symbol === selected.symbol) ?? null,
+    [selected.symbol, trackerState.positions]
+  );
+  const selectedAlert = useMemo(
+    () => trackerState.alerts.find((alert) => alert.symbol === selected.symbol) ?? null,
+    [selected.symbol, trackerState.alerts]
+  );
+  const isSelectedWatched = trackerState.watchlist.includes(selected.symbol);
   const nextCompareReplacement =
     compareSymbols.length >= maxCompareFunds && !compareSymbols.includes(selected.symbol) ? compareSymbols[0] : null;
   const prospectsVisible = showProspects && chartSize !== "Max";
@@ -207,6 +254,122 @@ export function StockDashboard() {
     },
     []
   );
+
+  useEffect(() => {
+    const hydrationId = window.setTimeout(() => {
+      void (async () => {
+        const trackerClientId = getOrCreateTrackerClientId();
+        const storedTrackerState = readJsonFromStorage(trackerStorageKey);
+        const storedCompareSymbols = readJsonFromStorage(compareStorageKey);
+        const localTrackerState = storedTrackerState
+          ? normalizeStoredTrackerState(storedTrackerState)
+          : createDefaultTrackerState();
+
+        trackerClientIdRef.current = trackerClientId;
+
+        if (!trackerHasUserEditsRef.current) {
+          setTrackerState(localTrackerState);
+        }
+
+        if (Array.isArray(storedCompareSymbols)) {
+          const normalizedCompareSymbols = storedCompareSymbols
+            .map((symbol) => (typeof symbol === "string" ? symbol.trim().toUpperCase() : ""))
+            .filter((symbol) => symbol.length > 0)
+            .slice(0, maxCompareFunds);
+
+          if (normalizedCompareSymbols.length) {
+            setCompareSymbols(normalizedCompareSymbols);
+          }
+        }
+
+        try {
+          const response = await fetch("/api/tracker", {
+            headers: {
+              "x-tracker-client-id": trackerClientId
+            }
+          });
+          const payload = (await response.json()) as Partial<{
+            state: TrackerState | null;
+            persistence: "database" | "local";
+            saved: boolean;
+            updatedAt: string | null;
+          }>;
+
+          if (response.ok && payload.state && !trackerHasUserEditsRef.current) {
+            setTrackerState(normalizeStoredTrackerState(payload.state));
+          }
+
+          trackerRemoteAvailableRef.current = response.ok && payload.persistence === "database";
+          setTrackerPersistence(trackerRemoteAvailableRef.current ? "synced" : "local");
+          setTrackerLastSavedAt(payload.updatedAt ?? null);
+        } catch {
+          trackerRemoteAvailableRef.current = false;
+          setTrackerPersistence("local");
+        }
+
+        setIsLocalStateHydrated(true);
+      })();
+    }, 0);
+
+    return () => window.clearTimeout(hydrationId);
+  }, []);
+
+  useEffect(() => {
+    if (!isLocalStateHydrated) {
+      return;
+    }
+
+    writeJsonToStorage(trackerStorageKey, trackerState);
+  }, [isLocalStateHydrated, trackerState]);
+
+  useEffect(() => {
+    if (!isLocalStateHydrated) {
+      return;
+    }
+
+    writeJsonToStorage(compareStorageKey, compareSymbols);
+  }, [compareSymbols, isLocalStateHydrated]);
+
+  useEffect(() => {
+    if (!isLocalStateHydrated || !trackerRemoteAvailableRef.current || !trackerClientIdRef.current) {
+      return undefined;
+    }
+
+    const saveId = window.setTimeout(() => {
+      void (async () => {
+        setTrackerPersistence("syncing");
+
+        try {
+          const response = await fetch("/api/tracker", {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "x-tracker-client-id": trackerClientIdRef.current ?? ""
+            },
+            body: JSON.stringify({ state: trackerState })
+          });
+          const payload = (await response.json()) as Partial<{
+            persistence: "database" | "local";
+            saved: boolean;
+            updatedAt: string | null;
+          }>;
+
+          if (response.ok && payload.saved && payload.persistence === "database") {
+            setTrackerPersistence("synced");
+            setTrackerLastSavedAt(payload.updatedAt ?? new Date().toISOString());
+            return;
+          }
+
+          trackerRemoteAvailableRef.current = false;
+          setTrackerPersistence("local");
+        } catch {
+          setTrackerPersistence("error");
+        }
+      })();
+    }, 650);
+
+    return () => window.clearTimeout(saveId);
+  }, [isLocalStateHydrated, trackerState]);
 
   useEffect(() => {
     if (!autoRefresh) {
@@ -350,11 +513,141 @@ export function StockDashboard() {
     });
   }
 
+  function markTrackerEdited() {
+    trackerHasUserEditsRef.current = true;
+  }
+
+  function toggleWatchSelected() {
+    markTrackerEdited();
+
+    setTrackerState((current) => {
+      if (current.watchlist.includes(selected.symbol)) {
+        return {
+          ...current,
+          watchlist: current.watchlist.filter((symbol) => symbol !== selected.symbol),
+          alerts: current.alerts.filter((alert) => alert.symbol !== selected.symbol)
+        };
+      }
+
+      const priceCad = toCadPrice(selected.price, selected);
+
+      return {
+        ...current,
+        watchlist: [...current.watchlist, selected.symbol],
+        alerts: [...current.alerts, createDefaultWatchAlert(selected, priceCad)]
+      };
+    });
+  }
+
+  function toggleSelectedPosition() {
+    markTrackerEdited();
+
+    setTrackerState((current) => {
+      if (current.positions.some((position) => position.symbol === selected.symbol)) {
+        return {
+          ...current,
+          positions: current.positions.filter((position) => position.symbol !== selected.symbol)
+        };
+      }
+
+      const priceCad = toCadPrice(selected.price, selected);
+      const watchlist = current.watchlist.includes(selected.symbol)
+        ? current.watchlist
+        : [...current.watchlist, selected.symbol];
+      const alerts = current.alerts.some((alert) => alert.symbol === selected.symbol)
+        ? current.alerts
+        : [...current.alerts, createDefaultWatchAlert(selected, priceCad)];
+
+      return {
+        ...current,
+        watchlist,
+        alerts,
+        positions: [...current.positions, createDefaultPosition(selected, priceCad)]
+      };
+    });
+  }
+
+  function updatePosition(symbol: string, patch: Partial<Pick<TrackerPosition, "shares" | "averageCostCad" | "notes">>) {
+    markTrackerEdited();
+
+    setTrackerState((current) => ({
+      ...current,
+      positions: current.positions.map((position) =>
+        position.symbol === symbol
+          ? {
+              ...position,
+              ...patch,
+              shares:
+                typeof patch.shares === "number"
+                  ? clamp(Number(patch.shares.toFixed(4)), 0, 1_000_000)
+                  : position.shares,
+              averageCostCad:
+                typeof patch.averageCostCad === "number"
+                  ? clamp(Number(patch.averageCostCad.toFixed(2)), 0, 10_000_000)
+                  : position.averageCostCad
+            }
+          : position
+      )
+    }));
+  }
+
+  function removePosition(symbol: string) {
+    markTrackerEdited();
+
+    setTrackerState((current) => ({
+      ...current,
+      positions: current.positions.filter((position) => position.symbol !== symbol)
+    }));
+  }
+
+  function updateAlert(symbol: string, patch: Partial<Pick<WatchAlert, "lowTargetCad" | "highTargetCad">>) {
+    markTrackerEdited();
+
+    setTrackerState((current) => {
+      const existingAlert = current.alerts.find((alert) => alert.symbol === symbol);
+      const instrument = instrumentBySymbol.get(symbol) ?? selected;
+      const defaultAlert = createDefaultWatchAlert(instrument, toCadPrice(instrument.price, instrument));
+      const nextAlert = {
+        ...(existingAlert ?? defaultAlert),
+        symbol,
+        ...patch
+      };
+      const alerts = existingAlert
+        ? current.alerts.map((alert) => (alert.symbol === symbol ? nextAlert : alert))
+        : [...current.alerts, nextAlert];
+      const watchlist = current.watchlist.includes(symbol) ? current.watchlist : [...current.watchlist, symbol];
+
+      return {
+        ...current,
+        watchlist,
+        alerts
+      };
+    });
+  }
+
+  function resetTracker() {
+    markTrackerEdited();
+    setTrackerState(createDefaultTrackerState());
+    setCompareSymbols([...coreCompareSymbols]);
+  }
+
+  function selectSymbolFromTracker(symbol: string) {
+    const instrument = instrumentBySymbol.get(symbol);
+
+    if (instrument) {
+      handleSelect(instrument);
+    }
+  }
+
+  function scrollToTrackerAlerts() {
+    document.getElementById("tracker-alerts")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   return (
     <TooltipProvider>
       <main className="min-h-screen px-4 py-4 text-foreground sm:px-6 lg:px-8">
         <div className="mx-auto flex max-w-[1500px] flex-col gap-4">
-          <header className="focus-rail sticky top-4 z-30 rounded-lg border border-white/10 bg-background/82 p-3 backdrop-blur-xl">
+          <header className="focus-rail z-30 rounded-lg border border-white/10 bg-background/82 p-3 backdrop-blur-xl lg:sticky lg:top-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex items-center gap-3">
                 <div className="flex size-10 items-center justify-center rounded-md border border-primary/30 bg-primary/10 text-primary">
@@ -391,7 +684,7 @@ export function StockDashboard() {
                 </Button>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant="outline" size="icon" aria-label="Watch alerts">
+                    <Button variant="outline" size="icon" aria-label="Watch alerts" onClick={scrollToTrackerAlerts}>
                       <Bell />
                     </Button>
                   </TooltipTrigger>
@@ -504,22 +797,42 @@ export function StockDashboard() {
             <div className="flex min-w-0 flex-col gap-4">
               <Card className="noise-panel focus-rail overflow-hidden">
                 <CardHeader className="pb-3">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-start 2xl:justify-between">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge>{selected.exchange}</Badge>
                         {selected.benchmark ? <Badge variant="outline">{selected.benchmark}</Badge> : null}
                       </div>
-                      <CardTitle className="mt-4 text-3xl leading-tight sm:text-4xl">
+                      <CardTitle className="mt-4 text-2xl leading-tight sm:text-3xl xl:text-4xl">
                         {selected.symbol}
-                        <span className="ml-3 text-xl font-normal text-muted-foreground sm:text-2xl">
+                        <span className="ml-2 text-lg font-normal text-muted-foreground sm:ml-3 sm:text-xl xl:text-2xl">
                           {selected.name}
                         </span>
                       </CardTitle>
                       <CardDescription className="mt-2 max-w-3xl text-sm leading-6">{selected.summary}</CardDescription>
                     </div>
-                    <div className="flex shrink-0 flex-col gap-2 sm:items-end">
+                    <div className="flex flex-col gap-2 2xl:shrink-0 2xl:items-end">
                       <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          variant={isSelectedWatched ? "secondary" : "outline"}
+                          onClick={toggleWatchSelected}
+                          aria-pressed={isSelectedWatched}
+                          data-testid="selected-watch-toggle"
+                        >
+                          {isSelectedWatched ? <Check /> : <Bell />}
+                          {isSelectedWatched ? "Watched" : "Watch"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant={selectedPosition ? "secondary" : "outline"}
+                          onClick={toggleSelectedPosition}
+                          aria-pressed={Boolean(selectedPosition)}
+                          data-testid="selected-position-toggle"
+                        >
+                          {selectedPosition ? <Check /> : <CircleDollarSign />}
+                          {selectedPosition ? "Position" : "Track Position"}
+                        </Button>
                         <Button
                           variant={compareSymbols.includes(selected.symbol) ? "secondary" : "outline"}
                           onClick={() => toggleCompare(selected.symbol)}
@@ -618,6 +931,25 @@ export function StockDashboard() {
                   ) : null}
                 </CardContent>
               </Card>
+
+              <TrackerCommandCenter
+                selected={selected}
+                selectedPosition={selectedPosition}
+                selectedAlert={selectedAlert}
+                selectedIsWatched={isSelectedWatched}
+                portfolio={portfolioAnalytics}
+                watchAlerts={watchAlertRows}
+                isHydrated={isLocalStateHydrated}
+                persistenceStatus={trackerPersistence}
+                lastSavedAt={trackerLastSavedAt}
+                onToggleWatch={toggleWatchSelected}
+                onTogglePosition={toggleSelectedPosition}
+                onUpdatePosition={updatePosition}
+                onRemovePosition={removePosition}
+                onUpdateAlert={updateAlert}
+                onSelectSymbol={selectSymbolFromTracker}
+                onReset={resetTracker}
+              />
 
               {comparisonVisible ? (
               <Card className="focus-rail">
@@ -1169,6 +1501,84 @@ function isWorkspacePanelId(value: string): value is WorkspacePanelId {
   return workspacePanels.some((panel) => panel.id === value);
 }
 
+function mergeInstrumentUniverse(groups: InstrumentDetail[][]) {
+  const bySymbol = new Map<string, InstrumentDetail>();
+
+  for (const group of groups) {
+    for (const instrument of group) {
+      bySymbol.set(instrument.symbol, instrument);
+    }
+  }
+
+  return [...bySymbol.values()];
+}
+
+function readJsonFromStorage(key: string) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const value = window.localStorage.getItem(key);
+    return value ? (JSON.parse(value) as unknown) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeJsonToStorage(key: string, value: unknown) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Local storage can be unavailable in private contexts; the in-memory tracker still works.
+  }
+}
+
+function getOrCreateTrackerClientId() {
+  const storedClientId = readStringFromStorage(trackerClientStorageKey);
+
+  if (storedClientId && /^[A-Za-z0-9_-]{12,96}$/.test(storedClientId)) {
+    return storedClientId;
+  }
+
+  const nextClientId =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `tracker_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
+
+  writeStringToStorage(trackerClientStorageKey, nextClientId);
+
+  return nextClientId;
+}
+
+function readStringFromStorage(key: string) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStringToStorage(key: string, value: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // The app can keep working in memory if browser storage is blocked.
+  }
+}
+
 function searchLocalInstruments(query: string) {
   const normalized = query.trim().toLowerCase();
 
@@ -1403,6 +1813,412 @@ function TooltipMetric({ label, value }: { label: string; value: string }) {
       <div className="mt-0.5 font-mono text-[12px] text-foreground">{value}</div>
     </div>
   );
+}
+
+function TrackerCommandCenter({
+  selected,
+  selectedPosition,
+  selectedAlert,
+  selectedIsWatched,
+  portfolio,
+  watchAlerts,
+  isHydrated,
+  persistenceStatus,
+  lastSavedAt,
+  onToggleWatch,
+  onTogglePosition,
+  onUpdatePosition,
+  onRemovePosition,
+  onUpdateAlert,
+  onSelectSymbol,
+  onReset
+}: {
+  selected: InstrumentDetail;
+  selectedPosition: TrackerPosition | null;
+  selectedAlert: WatchAlert | null;
+  selectedIsWatched: boolean;
+  portfolio: PortfolioAnalytics;
+  watchAlerts: WatchAlertRow[];
+  isHydrated: boolean;
+  persistenceStatus: TrackerPersistenceStatus;
+  lastSavedAt: string | null;
+  onToggleWatch: () => void;
+  onTogglePosition: () => void;
+  onUpdatePosition: (
+    symbol: string,
+    patch: Partial<Pick<TrackerPosition, "shares" | "averageCostCad" | "notes">>
+  ) => void;
+  onRemovePosition: (symbol: string) => void;
+  onUpdateAlert: (symbol: string, patch: Partial<Pick<WatchAlert, "lowTargetCad" | "highTargetCad">>) => void;
+  onSelectSymbol: (symbol: string) => void;
+  onReset: () => void;
+}) {
+  const selectedPriceCad = toCadPrice(selected.price, selected);
+  const selectedWatchRow = watchAlerts.find((row) => row.symbol === selected.symbol);
+  const triggeredAlerts = watchAlerts.filter((row) => row.status === "below" || row.status === "above");
+  const selectedMarketValue = selectedPosition ? selectedPosition.shares * selectedPriceCad : 0;
+  const persistenceBadge = getTrackerPersistenceBadge(persistenceStatus, isHydrated, lastSavedAt);
+
+  return (
+    <Card className="focus-rail" data-testid="portfolio-tracker">
+      <CardHeader className="pb-2">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <CardTitle>Portfolio Tracker</CardTitle>
+            <CardDescription>Positions, alerts, allocation, and risk flags.</CardDescription>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={triggeredAlerts.length ? "warning" : "secondary"}>
+              {triggeredAlerts.length ? `${triggeredAlerts.length} alert${triggeredAlerts.length === 1 ? "" : "s"}` : "No alerts"}
+            </Badge>
+            <Badge variant={persistenceBadge.variant}>{persistenceBadge.label}</Badge>
+            <Button type="button" variant="ghost" size="sm" onClick={onReset}>
+              <RefreshCw />
+              Reset
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <Metric label="Market Value" value={formatCadCurrency(portfolio.totalMarketValueCad)} icon={<CircleDollarSign />} />
+          <Metric label="Day Move" value={formatSignedCad(portfolio.dayChangeCad)} icon={<Activity />} />
+          <Metric
+            label="Unrealized P/L"
+            value={`${formatSignedCad(portfolio.unrealizedPnlCad)} ${formatPercent(portfolio.unrealizedPnlPercent, {
+              signed: true
+            })}`}
+            icon={<Gauge />}
+          />
+          <Metric
+            label="Weighted Cost"
+            value={portfolio.weightedExpenseRatio === null ? "n/a" : formatPercent(portfolio.weightedExpenseRatio)}
+            icon={<Landmark />}
+          />
+        </div>
+
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+          <div className="rounded-md border border-white/10 bg-background/35 p-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-sm font-semibold">{selected.symbol}</span>
+                  <ChangePill value={selected.changePercent} />
+                  {selectedWatchRow ? <AlertStatusBadge status={selectedWatchRow.status} /> : null}
+                </div>
+                <p className="mt-1 truncate text-sm text-muted-foreground">{selected.name}</p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {formatCadCurrency(selectedPriceCad)} CAD current tracker price
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant={selectedIsWatched ? "secondary" : "outline"}
+                  size="sm"
+                  onClick={onToggleWatch}
+                  aria-pressed={selectedIsWatched}
+                >
+                  {selectedIsWatched ? <Check /> : <Bell />}
+                  {selectedIsWatched ? "Watched" : "Watch"}
+                </Button>
+                <Button
+                  type="button"
+                  variant={selectedPosition ? "secondary" : "outline"}
+                  size="sm"
+                  onClick={onTogglePosition}
+                  aria-pressed={Boolean(selectedPosition)}
+                >
+                  {selectedPosition ? <Check /> : <Plus />}
+                  {selectedPosition ? "Tracked" : "Position"}
+                </Button>
+              </div>
+            </div>
+
+            {selectedIsWatched ? (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <label className="text-xs text-muted-foreground">
+                  Low alert CAD
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={numberInputValue(selectedAlert?.lowTargetCad)}
+                    onChange={(event) => onUpdateAlert(selected.symbol, { lowTargetCad: numberFromInput(event.currentTarget.value) })}
+                    className="mt-1"
+                    data-testid="alert-low-input"
+                  />
+                </label>
+                <label className="text-xs text-muted-foreground">
+                  High alert CAD
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={numberInputValue(selectedAlert?.highTargetCad)}
+                    onChange={(event) => onUpdateAlert(selected.symbol, { highTargetCad: numberFromInput(event.currentTarget.value) })}
+                    className="mt-1"
+                    data-testid="alert-high-input"
+                  />
+                </label>
+              </div>
+            ) : (
+              <StateNotice icon={<Bell />} title="Not watched" tone="primary">
+                Add {selected.symbol} to the watchlist to track CAD price bands.
+              </StateNotice>
+            )}
+
+            {selectedPosition ? (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <label className="text-xs text-muted-foreground">
+                  Shares
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.0001"
+                    value={numberInputValue(selectedPosition.shares)}
+                    onChange={(event) => onUpdatePosition(selected.symbol, { shares: numberFromInput(event.currentTarget.value) ?? 0 })}
+                    className="mt-1"
+                    data-testid="position-shares-input"
+                  />
+                </label>
+                <label className="text-xs text-muted-foreground">
+                  Avg cost CAD
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={numberInputValue(selectedPosition.averageCostCad)}
+                    onChange={(event) =>
+                      onUpdatePosition(selected.symbol, { averageCostCad: numberFromInput(event.currentTarget.value) ?? 0 })
+                    }
+                    className="mt-1"
+                    data-testid="position-cost-input"
+                  />
+                </label>
+                <div className="rounded-md border border-white/10 bg-background/45 p-3 text-sm">
+                  <div className="text-xs text-muted-foreground">Selected value</div>
+                  <div className="mt-1 font-semibold">{formatCadCurrency(selectedMarketValue)}</div>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={() => onRemovePosition(selected.symbol)}>
+                  <X />
+                  Remove position
+                </Button>
+              </div>
+            ) : null}
+          </div>
+
+          <div
+            id="tracker-alerts"
+            className="scroll-mt-6 rounded-md border border-white/10 bg-background/35 p-3 lg:scroll-mt-28"
+            data-testid="tracker-alerts"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Bell className="size-4 text-primary" />
+                Alert Center
+              </div>
+              <Badge variant={triggeredAlerts.length ? "warning" : "outline"}>{watchAlerts.length} watched</Badge>
+            </div>
+            <div className="mt-3 space-y-2">
+              {watchAlerts.length ? (
+                watchAlerts.map((row) => (
+                  <button
+                    type="button"
+                    key={row.symbol}
+                    onClick={() => onSelectSymbol(row.symbol)}
+                    className="w-full rounded-md border border-border bg-secondary/35 p-3 text-left transition hover:border-primary/40 hover:bg-primary/7"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-mono text-sm font-semibold">{row.symbol}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{formatCadCurrency(row.priceCad)} CAD</div>
+                      </div>
+                      <AlertStatusBadge status={row.status} />
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                      <span>Low {row.lowTargetCad === undefined ? "n/a" : formatCadCurrency(row.lowTargetCad)}</span>
+                      <span>High {row.highTargetCad === undefined ? "n/a" : formatCadCurrency(row.highTargetCad)}</span>
+                    </div>
+                  </button>
+                ))
+              ) : (
+                <EmptyState icon={<Bell />} title="No watchlist symbols" description="Track a symbol to create alerts." />
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]">
+          <div className="rounded-md border border-white/10 bg-background/35 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <ChartPie className="size-4 text-primary" />
+                Positions
+              </div>
+              <Badge variant="secondary">{portfolio.rows.length} tracked</Badge>
+            </div>
+            {portfolio.rows.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] border-separate border-spacing-y-2 text-sm">
+                  <thead className="text-left text-xs uppercase text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Symbol</th>
+                      <th className="px-3 py-2 font-medium">Shares</th>
+                      <th className="px-3 py-2 font-medium">Value</th>
+                      <th className="px-3 py-2 font-medium">Allocation</th>
+                      <th className="px-3 py-2 font-medium">Day</th>
+                      <th className="px-3 py-2 font-medium">P/L</th>
+                      <th className="px-3 py-2 font-medium">Risk</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {portfolio.rows.map((row) => (
+                      <tr key={row.position.symbol} className="bg-secondary/45">
+                        <td className="rounded-l-md px-3 py-3">
+                          <button
+                            type="button"
+                            className="font-mono font-semibold text-foreground hover:text-primary"
+                            onClick={() => onSelectSymbol(row.position.symbol)}
+                          >
+                            {row.position.symbol}
+                          </button>
+                          <div className="mt-1 max-w-[180px] truncate text-xs text-muted-foreground">{row.instrument.name}</div>
+                        </td>
+                        <td className="px-3 py-3 font-mono">{formatPositionShares(row.position.shares)}</td>
+                        <td className="px-3 py-3">{formatCadCurrency(row.marketValueCad)}</td>
+                        <td className="px-3 py-3">
+                          <AllocationBar label={formatPercent(row.allocation)} value={row.allocation} />
+                        </td>
+                        <td className="px-3 py-3">{formatSignedCad(row.dayChangeCad)}</td>
+                        <td className={cn("px-3 py-3", row.unrealizedPnlCad >= 0 ? "text-emerald-200" : "text-red-200")}>
+                          {formatSignedCad(row.unrealizedPnlCad)}
+                          <div className="text-xs">{formatPercent(row.unrealizedPnlPercent, { signed: true })}</div>
+                        </td>
+                        <td className="rounded-r-md px-3 py-3 text-muted-foreground">{getPortfolioRole(row.instrument).label}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyState icon={<CircleDollarSign />} title="No positions" description="Track a selected symbol as a position." />
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <div className="rounded-md border border-white/10 bg-background/35 p-3">
+              <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+                <ShieldCheck className="size-4 text-primary" />
+                Risk Flags
+              </div>
+              <ul className="space-y-2">
+                {portfolio.riskFlags.map((flag) => (
+                  <li key={flag} className="rounded-md border border-white/10 bg-secondary/35 p-2 text-xs leading-5 text-muted-foreground">
+                    {flag}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="rounded-md border border-white/10 bg-background/35 p-3">
+              <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+                <Layers3 className="size-4 text-primary" />
+                Allocation
+              </div>
+              <div className="space-y-3">
+                {portfolio.sectorExposures.map((slice) => (
+                  <AllocationBar key={slice.label} label={slice.label} value={slice.weight} />
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-white/10 bg-background/35 p-3">
+              <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+                <Target className="size-4 text-primary" />
+                Underlying
+              </div>
+              <div className="space-y-3">
+                {portfolio.underlyingHoldings.map((slice) => (
+                  <AllocationBar key={slice.label} label={slice.label} value={slice.weight} />
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function AlertStatusBadge({ status }: { status: WatchAlertRow["status"] }) {
+  const label = {
+    above: "Above target",
+    below: "Below target",
+    inside: "Inside band",
+    unconfigured: "No band"
+  }[status];
+  const variant = status === "above" || status === "below" ? "warning" : status === "inside" ? "default" : "outline";
+
+  return <Badge variant={variant}>{label}</Badge>;
+}
+
+function getTrackerPersistenceBadge(
+  status: TrackerPersistenceStatus,
+  isHydrated: boolean,
+  lastSavedAt: string | null
+): { label: string; variant: "default" | "secondary" | "outline" | "warning" | "magenta" } {
+  if (!isHydrated || status === "loading") {
+    return { label: "Loading", variant: "outline" };
+  }
+
+  if (status === "syncing") {
+    return { label: "Syncing", variant: "magenta" };
+  }
+
+  if (status === "synced") {
+    return { label: lastSavedAt ? `DB saved ${formatClock(lastSavedAt)}` : "DB saved", variant: "default" };
+  }
+
+  if (status === "error") {
+    return { label: "Local fallback", variant: "warning" };
+  }
+
+  return { label: "Saved locally", variant: "secondary" };
+}
+
+function formatSignedCad(value: number) {
+  const formatted = formatCadCurrency(Math.abs(value));
+
+  if (value > 0) {
+    return `+${formatted}`;
+  }
+
+  if (value < 0) {
+    return `-${formatted}`;
+  }
+
+  return formatted;
+}
+
+function formatPositionShares(value: number) {
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: value < 10 ? 4 : 2
+  }).format(value);
+}
+
+function numberInputValue(value: number | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+}
+
+function numberFromInput(value: string) {
+  if (!value.trim()) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 type ChartPoint = {
@@ -2190,6 +3006,10 @@ function getCadPriceMultiplier(instrument: InstrumentDetail) {
 
 function toCadPrice(value: number, instrument: InstrumentDetail) {
   return value * getCadPriceMultiplier(instrument);
+}
+
+function getInstrumentCadPrice(instrument: InstrumentDetail) {
+  return toCadPrice(instrument.price, instrument);
 }
 
 function getCadPriceNote(instrument: InstrumentDetail) {

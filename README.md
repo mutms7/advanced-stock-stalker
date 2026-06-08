@@ -7,11 +7,14 @@ A dark stock tracker for looking up stocks and ETFs, comparing funds, reading re
 ## What The App Can Do
 
 - Search for a stock, ETF, fund, or index by ticker.
+- Track a local portfolio with shares, CAD average cost, market value, day move, and unrealized P/L.
+- Keep a local watchlist with editable CAD low/high alert bands.
+- Review allocation, top underlying holdings, and tracker-level risk flags.
 - Show a price chart with time ranges, overlays, volume, and benchmark comparison.
 - Make the chart bigger, shrink side panels, or hide panels in the dock.
 - Drag panel chips into the Hidden dock and drag them back when needed.
 - Resize the list, quick take, and stats areas with sliders.
-- Compare ETFs like VOO, VTI, QQQM, VXUS, BND, SCHD, and XEQT.
+- Compare ETFs like VOO, VTI, QQQM, VXUS, BND, SCHD, and XEQT with local compare-set persistence.
 - Show basic fund details: fee, yield, assets, volatility, sectors, regions, and holdings.
 - Pull recent news/search context and make a cautious up/down/sideways quick take.
 - Run with mock data locally, then switch to Polygon/Massive, FMP, Alpha Vantage, Brave Search, and OpenAI when keys are configured.
@@ -23,6 +26,7 @@ A dark stock tracker for looking up stocks and ETFs, comparing funds, reading re
 - Dark, finance-focused dashboard UI
 - Prisma schema for instruments, watchlists, ETF holdings, news, and assessments
 - API routes for instrument search, instrument detail, and AI/news assessment
+- Tracker persistence that uses Postgres when `DATABASE_URL` is configured and falls back to browser-local storage when it is not
 - Mock-first market and news data so the app runs without paid provider keys
 - Environment hooks for OpenAI, Brave Search, Polygon/Massive, FMP, and Alpha Vantage
 
@@ -49,6 +53,14 @@ Local development works with mock providers:
 MARKET_DATA_PROVIDER="mock"
 NEWS_SEARCH_PROVIDER="mock"
 ```
+
+For deployed tracker sync, add a hosted Postgres URL:
+
+```env
+DATABASE_URL="postgresql://..."
+```
+
+Without `DATABASE_URL`, every browser still gets its own local tracker state.
 
 For AI assessments:
 
@@ -81,6 +93,8 @@ MARKET_DATA_PROVIDER="alpha_vantage"
 ALPHA_VANTAGE_API_KEY="..."
 ```
 
+FMP uses the current stable API base (`https://financialmodelingprep.com/stable/`). To test a key directly, use a URL like `https://financialmodelingprep.com/stable/search-symbol?query=AAPL&apikey=YOUR_KEY`.
+
 ## Useful Scripts
 
 ```powershell
@@ -93,10 +107,12 @@ pnpm prisma:migrate
 
 ## Product Direction
 
+See [docs/stock-tracker-audit.md](docs/stock-tracker-audit.md) for the current gap list and the latest tracker fixes.
+
 The next milestones are:
 
-1. Add authenticated watchlists and persisted comparison sets.
+1. Add authenticated accounts on top of the anonymous tracker snapshot API.
 2. Replace mock market data with licensed quote, history, ETF profile, and holdings providers.
-3. Add ETF overlap analysis and benchmark tracking error charts.
+3. Add server-side alert jobs, notifications, and live FX.
 4. Persist recent news and AI assessments with provider timestamps.
-5. Add Playwright coverage for search, compare, and assessment flows.
+5. Add broker CSV import/export, tax lots, realized gains, dividends received, and cash balances.

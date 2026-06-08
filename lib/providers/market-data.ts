@@ -8,6 +8,7 @@ const MAX_SYMBOL_LENGTH = 20;
 const DETAIL_CACHE_TTL_MS = 30_000;
 const SEARCH_CACHE_TTL_MS = 60_000;
 const PROVIDER_TIMEOUT_MS = 8_000;
+const FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable";
 
 const SEARCH_QUERY_PATTERN = /^[A-Za-z0-9 .,&'()+/^:-]*$/;
 const SYMBOL_PATTERN = /^(?:\^[A-Z0-9][A-Z0-9.-]{0,18}|[A-Z0-9][A-Z0-9.-]{0,19})$/;
@@ -294,10 +295,10 @@ class FmpMarketDataProvider implements MarketDataProvider {
       return mockProvider.search(query, options);
     }
 
-    const url = new URL("https://financialmodelingprep.com/api/v3/search");
-    url.searchParams.set("query", query);
-    url.searchParams.set("limit", String(normalizeLimit(options.limit, DEFAULT_SEARCH_LIMIT)));
-    url.searchParams.set("apikey", this.apiKey);
+    const url = this.createUrl("search-symbol", {
+      query,
+      limit: String(normalizeLimit(options.limit, DEFAULT_SEARCH_LIMIT))
+    });
 
     const payload = await fetchProviderJson<unknown>(url, this.name);
 
@@ -308,9 +309,9 @@ class FmpMarketDataProvider implements MarketDataProvider {
 
   async getDetail(symbol: string) {
     const [quoteResult, profileResult, historyResult] = await Promise.allSettled([
-      fetchProviderJson<unknown>(this.createUrl(`quote/${encodeURIComponent(symbol)}`), this.name),
-      fetchProviderJson<unknown>(this.createUrl(`profile/${encodeURIComponent(symbol)}`), this.name),
-      fetchProviderJson<unknown>(this.createUrl(`historical-price-full/${encodeURIComponent(symbol)}`, { timeseries: "5000" }), this.name)
+      fetchProviderJson<unknown>(this.createUrl("quote", { symbol }), this.name),
+      fetchProviderJson<unknown>(this.createUrl("profile", { symbol }), this.name),
+      fetchProviderJson<unknown>(this.createUrl("historical-price-eod/full", { symbol }), this.name)
     ]);
 
     throwIfAllRejected([quoteResult, profileResult, historyResult], this.name);
@@ -330,7 +331,8 @@ class FmpMarketDataProvider implements MarketDataProvider {
   }
 
   private createUrl(path: string, params: Record<string, string> = {}) {
-    const url = new URL(`https://financialmodelingprep.com/api/v3/${path}`);
+    const normalizedPath = path.replace(/^\/+/, "");
+    const url = new URL(`${FMP_STABLE_BASE_URL}/${normalizedPath}`);
 
     for (const [key, value] of Object.entries(params)) {
       url.searchParams.set(key, value);
@@ -534,7 +536,10 @@ async function fetchProviderJson<T>(url: URL, provider: MarketDataProviderName) 
     });
 
     if (!response.ok) {
-      throw new MarketDataProviderError(`${formatProviderName(provider)} returned HTTP ${response.status}.`);
+      const detail = await readProviderErrorMessage(response);
+      throw new MarketDataProviderError(
+        `${formatProviderName(provider)} returned HTTP ${response.status}${detail ? `: ${detail}` : "."}`
+      );
     }
 
     return (await response.json()) as T;
@@ -551,6 +556,44 @@ async function fetchProviderJson<T>(url: URL, provider: MarketDataProviderName) 
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function readProviderErrorMessage(response: Response) {
+  const text = await response.text().catch(() => "");
+  const trimmed = text.trim();
+
+  if (!trimmed) {
+    return undefined;
+  }
+
+  try {
+    return extractProviderErrorMessage(JSON.parse(trimmed)) ?? trimText(trimmed.replace(/\s+/g, " "), 180);
+  } catch {
+    return trimText(trimmed.replace(/\s+/g, " "), 180);
+  }
+}
+
+function extractProviderErrorMessage(payload: unknown): string | undefined {
+  const record = asRecord(payload);
+  const direct =
+    stringField(record, "Error Message") ??
+    stringField(record, "error") ??
+    stringField(record, "message") ??
+    stringField(record, "Information") ??
+    stringField(record, "Note");
+
+  if (direct) {
+    return trimText(direct, 180);
+  }
+
+  const nestedError = asRecord(record?.error);
+  const nestedMessage = stringField(nestedError, "message") ?? stringField(nestedError, "code");
+
+  if (nestedMessage) {
+    return trimText(nestedMessage, 180);
+  }
+
+  return asArray(payload).map(extractProviderErrorMessage).find(Boolean);
 }
 
 function mapPolygonSearchResult(value: unknown): InstrumentDetail | null {
@@ -784,7 +827,7 @@ function mapPolygonHistory(payload: unknown): PricePoint[] {
 }
 
 function mapFmpHistory(payload: unknown): PricePoint[] {
-  const rows = asArray(asRecord(payload)?.historical);
+  const rows = Array.isArray(payload) ? asArray(payload) : asArray(asRecord(payload)?.historical);
 
   return rows
     .map((row): PricePoint | null => {

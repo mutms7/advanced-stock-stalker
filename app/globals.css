@@ -114,7 +114,7 @@ body {
   grid-template-columns: 1fr;
 }
 
-@media (min-width: 1280px) {
+@media (min-width: 1536px) {
   .workspace-grid {
     grid-template-columns: var(--workspace-columns, 1fr);
   }

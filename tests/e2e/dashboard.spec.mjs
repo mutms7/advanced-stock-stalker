@@ -11,6 +11,9 @@ test.describe("dashboard smoke", () => {
     await expect(page.getByText("Recent News")).toBeVisible();
     await expect(page.getByText("Chart Settings")).toBeVisible();
     await expect(page.getByText("Layout")).toBeVisible();
+    await expect(page.getByTestId("portfolio-tracker")).toContainText("Portfolio Tracker");
+    await expect(page.getByTestId("portfolio-tracker")).toContainText("Market Value");
+    await expect(page.getByTestId("tracker-alerts")).toContainText("Alert Center");
     await expect(page.getByRole("button", { name: "1Y" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Live pulse" })).toBeVisible();
     await expect(page.getByText("Vanguard S&P 500 ETF").first()).toBeVisible();
@@ -80,6 +83,21 @@ test.describe("dashboard smoke", () => {
 
     await expect(page.getByText("Vanguard Total International Stock ETF").first()).toBeVisible();
     await expect(page.getByText("International developed and emerging equity").first()).toBeVisible();
+  });
+
+  test("tracks positions and editable CAD alert bands", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.getByTestId("portfolio-tracker")).toContainText("VOO");
+
+    await page.getByTestId("position-shares-input").fill("13");
+    await page.getByTestId("position-cost-input").fill("650");
+    await page.getByTestId("alert-low-input").fill("600");
+    await page.getByTestId("alert-high-input").fill("780");
+
+    await expect(page.getByTestId("portfolio-tracker")).toContainText("13");
+    await expect(page.getByTestId("tracker-alerts")).toContainText("$600.00");
+    await expect(page.getByTestId("tracker-alerts")).toContainText("$780.00");
   });
 
   test("keeps cited research context visible", async ({ page }) => {

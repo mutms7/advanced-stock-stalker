@@ -125,6 +125,13 @@ model Assessment {
   @@index([instrumentId, generatedAt])
 }
 
+model TrackerStateSnapshot {
+  clientId  String   @id
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 enum AssetType {
   ETF
   STOCK

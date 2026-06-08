@@ -88,3 +88,56 @@ test.describe("assessments API", () => {
     );
   });
 });
+
+test.describe("tracker API", () => {
+  test("loads tracker persistence mode for a valid anonymous client", async ({ request }) => {
+    const response = await request.get("/api/tracker", {
+      headers: {
+        "x-tracker-client-id": "test-client-load-001"
+      }
+    });
+
+    expect(response.status()).toBe(200);
+
+    const payload = await response.json();
+    expect(["database", "local"]).toContain(payload.persistence);
+    expect(typeof payload.saved).toBe("boolean");
+  });
+
+  test("accepts a tracker snapshot and returns a normalized state", async ({ request }) => {
+    const response = await request.put("/api/tracker", {
+      headers: {
+        "x-tracker-client-id": "test-client-save-001"
+      },
+      data: {
+        state: {
+          watchlist: ["voo", "xeqt"],
+          positions: [{ symbol: "voo", shares: 3, averageCostCad: 650, addedAt: "2026-06-01T12:00:00.000Z" }],
+          alerts: [{ symbol: "voo", lowTargetCad: 600, highTargetCad: 760, createdAt: "2026-06-01T12:00:00.000Z" }]
+        }
+      }
+    });
+
+    expect([200, 202]).toContain(response.status());
+
+    const payload = await response.json();
+    expect(["database", "local"]).toContain(payload.persistence);
+    expect(payload.state.watchlist).toContain("VOO");
+    expect(payload.state.positions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          symbol: "VOO",
+          shares: 3,
+          averageCostCad: 650
+        })
+      ])
+    );
+  });
+
+  test("rejects missing tracker client ids", async ({ request }) => {
+    const response = await request.get("/api/tracker");
+
+    expect(response.status()).toBe(400);
+    expect(await response.json()).toEqual({ error: "Expected a valid tracker client id." });
+  });
+});
