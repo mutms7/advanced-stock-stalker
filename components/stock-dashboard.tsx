@@ -3041,7 +3041,6 @@ function ChartTerminal({
                   stroke={isHoveringChart ? "var(--chart-crosshair-active)" : "var(--chart-crosshair)"}
                   strokeWidth="0.5"
                 />
-                <circle cx={activePoint.x} cy={activePoint.y} r={isHoveringChart ? "2.1" : "1.6"} fill={chartToneColor} />
               </g>
             ) : null}
 
@@ -3055,6 +3054,24 @@ function ChartTerminal({
               pointerEvents="all"
             />
           </svg>
+
+          {activePoint ? (
+            <div className="pointer-events-none absolute inset-3">
+              <span
+                data-testid="chart-active-marker"
+                className={cn(
+                  "absolute rounded-full border-2 border-background shadow-sm",
+                  isHoveringChart ? "size-2.5" : "size-2"
+                )}
+                style={{
+                  left: `${activePoint.x}%`,
+                  top: `${activePoint.y}%`,
+                  transform: "translate(-50%, -50%)",
+                  backgroundColor: chartToneColor
+                }}
+              />
+            </div>
+          ) : null}
 
           <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-border bg-card/90 px-2 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur">
             {chart.yLabels[2]} / {chart.yLabels[1]} / {chart.yLabels[0]}
