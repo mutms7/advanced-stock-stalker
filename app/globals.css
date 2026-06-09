@@ -163,17 +163,7 @@ body {
 @media (min-width: 1024px) {
   .workspace-grid {
     align-items: start;
-    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-  }
-
-  .workspace-grid.max-chart {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (min-width: 1536px) {
-  .workspace-grid {
-    grid-template-columns: var(--workspace-columns, 1fr);
+    grid-template-columns: var(--workspace-columns, minmax(0, 1fr));
   }
 
   .workspace-grid.max-chart {
@@ -183,6 +173,6 @@ body {
 
 @media (min-width: 1536px) {
   .chart-detail-grid.has-metrics {
-    grid-template-columns: minmax(0, 1fr) var(--metric-column, 280px);
+    grid-template-columns: minmax(0, 1fr) minmax(116px, var(--metric-column, 142px));
   }
 }

@@ -1,11 +1,21 @@
 import { expect, test } from "@playwright/test";
 
+async function searchTicker(page, ticker) {
+  await page.getByPlaceholder("Search any ticker, like VOO or XEQT...").fill(ticker);
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(page.getByTestId("stock-slot-bar")).toContainText(ticker.toUpperCase());
+}
+
 test.describe("dashboard smoke", () => {
-  test("loads the core dashboard panels and default mock fund", async ({ page }) => {
+  test("loads the core dashboard panels with empty tracking slots", async ({ page }) => {
     await page.goto("/");
 
     await expect(page.getByRole("heading", { name: "Advanced Stock Stalker" })).toBeVisible();
-    await expect(page.getByText("Stock List")).toBeVisible();
+    await expect(page.getByTestId("stock-slot-bar")).toContainText("Stock Bar");
+    await expect(page.getByTestId("stock-slot-bar")).toContainText("0 tracked");
+    await expect(page.getByTestId("stock-slot-bar").getByRole("button", { name: "Add stock" })).toHaveCount(8);
+    await expect(page.getByText("Search a ticker to start")).toBeVisible();
+    await expect(page.getByText("No stock loaded")).toBeVisible();
     await expect(page.getByText("Compare Funds", { exact: true })).toBeVisible();
     await expect(page.getByText("News plus a plain-English view.")).toBeVisible();
     await expect(page.getByText("Recent News")).toBeVisible();
@@ -14,18 +24,20 @@ test.describe("dashboard smoke", () => {
     await expect(page.getByTestId("portfolio-tracker")).toContainText("Portfolio Tracker");
     await expect(page.getByTestId("portfolio-tracker")).toContainText("Market Value");
     await expect(page.getByTestId("tracker-alerts")).toContainText("Alert Center");
-    await expect(page.getByRole("button", { name: "1Y" })).toBeVisible();
+    await expect(page.getByText("Search a ticker to load the chart")).toBeVisible();
     await expect(page.getByRole("button", { name: "Live pulse" })).toBeVisible();
-    await expect(page.getByText("Vanguard S&P 500 ETF").first()).toBeVisible();
+    await expect(page.getByText("Vanguard S&P 500 ETF")).toHaveCount(0);
   });
 
   test("can focus the chart and collapse secondary panels", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByTestId("workspace-layout")).toHaveAttribute("data-ready", "true");
+    await searchTicker(page, "VOO");
+    await expect(page.locator('svg[aria-label^="VOO"]').first()).toBeVisible();
 
     await page.getByTestId("workspace-size-max").click();
 
-    await expect(page.getByText("Stock List")).toBeHidden();
+    await expect(page.getByTestId("stock-slot-bar")).toBeHidden();
     await expect(page.getByText("News plus a plain-English view.")).toBeHidden();
     await expect(page.locator('svg[aria-label^="VOO"]').first()).toBeVisible();
 
@@ -38,6 +50,7 @@ test.describe("dashboard smoke", () => {
   test("shows CAD chart details on hover and updates the active range", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByTestId("workspace-layout")).toHaveAttribute("data-ready", "true");
+    await searchTicker(page, "VOO");
 
     const chartPanel = page.getByTestId("price-chart-panel");
     await chartPanel.evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest" }));
@@ -78,15 +91,16 @@ test.describe("dashboard smoke", () => {
   test("searches for a mock instrument and promotes the first result", async ({ page }) => {
     await page.goto("/");
 
-    await page.getByPlaceholder("Search any ticker, like VOO or XEQT...").fill("vxus");
-    await page.getByRole("button", { name: "Search", exact: true }).click();
+    await searchTicker(page, "vxus");
 
     await expect(page.getByText("Vanguard Total International Stock ETF").first()).toBeVisible();
-    await expect(page.getByText("International developed and emerging equity").first()).toBeVisible();
+    await expect(page.getByText("VXUS").first()).toBeVisible();
   });
 
   test("tracks positions and editable CAD alert bands", async ({ page }) => {
     await page.goto("/");
+    await searchTicker(page, "VOO");
+    await page.getByTestId("selected-position-toggle").click();
 
     await expect(page.getByTestId("portfolio-tracker")).toContainText("VOO");
 
@@ -102,6 +116,7 @@ test.describe("dashboard smoke", () => {
 
   test("keeps cited research context visible", async ({ page }) => {
     await page.goto("/");
+    await searchTicker(page, "VOO");
 
     await expect(page.getByText("For research only.")).toBeVisible();
     await expect(page.getByText("S&P 500 funds see steady inflows").first()).toBeVisible();

@@ -9,6 +9,7 @@ const DETAIL_CACHE_TTL_MS = 30_000;
 const SEARCH_CACHE_TTL_MS = 60_000;
 const PROVIDER_TIMEOUT_MS = 8_000;
 const FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable";
+const YAHOO_CHART_BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
 
 const SEARCH_QUERY_PATTERN = /^[A-Za-z0-9 .,&'()+/^:-]*$/;
 const SYMBOL_PATTERN = /^(?:\^[A-Z0-9][A-Z0-9.-]{0,18}|[A-Z0-9][A-Z0-9.-]{0,19})$/;
@@ -323,7 +324,10 @@ class FmpMarketDataProvider implements MarketDataProvider {
       return null;
     }
 
-    return mapFmpDetail(symbol, quote, profile, getSettledValue(historyResult));
+    const fmpHistory = mapFmpHistory(getSettledValue(historyResult));
+    const history = await loadSupplementalHistory(symbol, fmpHistory);
+
+    return mapFmpDetail(symbol, quote, profile, history);
   }
 
   getFeaturedIndexFunds() {
@@ -680,7 +684,7 @@ function mapFmpSearchResult(value: unknown): InstrumentDetail | null {
   });
 }
 
-function mapFmpDetail(symbol: string, quote: Record<string, unknown> | null, profile: Record<string, unknown> | null, history: unknown) {
+function mapFmpDetail(symbol: string, quote: Record<string, unknown> | null, profile: Record<string, unknown> | null, history: PricePoint[]) {
   const name = stringField(profile, "companyName") ?? stringField(quote, "name") ?? symbol;
   const sector = stringField(profile, "sector");
   const country = stringField(profile, "country");
@@ -708,7 +712,7 @@ function mapFmpDetail(symbol: string, quote: Record<string, unknown> | null, pro
     beta: numberField(profile, "beta"),
     sectors: sector ? [{ label: sector, weight: 1 }] : undefined,
     regions: country ? [{ label: country, weight: 1 }] : undefined,
-    history: mapFmpHistory(history),
+    history,
     focus: compactSentence([sector, stringField(profile, "industry"), "FMP live quote"]),
     summary: description
   });
@@ -852,6 +856,110 @@ function mapFmpHistory(payload: unknown): PricePoint[] {
     .sort(sortPricePointByDate);
 }
 
+async function loadSupplementalHistory(symbol: string, currentHistory: PricePoint[]) {
+  if (isUsableLiveHistory(currentHistory)) {
+    return currentHistory;
+  }
+
+  try {
+    const yahooHistory = await fetchYahooChartHistory(symbol);
+
+    if (isUsableLiveHistory(yahooHistory) && yahooHistory.length > currentHistory.length) {
+      return yahooHistory;
+    }
+  } catch {
+    // Keep the primary provider's history when the supplemental chart feed is unavailable.
+  }
+
+  return currentHistory;
+}
+
+async function fetchYahooChartHistory(symbol: string) {
+  const yahooSymbol = toYahooChartSymbol(symbol);
+  const url = new URL(`${YAHOO_CHART_BASE_URL}/${encodeURIComponent(yahooSymbol)}`);
+  url.searchParams.set("range", "10y");
+  url.searchParams.set("interval", "1d");
+  url.searchParams.set("events", "history");
+  url.searchParams.set("includeAdjustedClose", "true");
+
+  const payload = await fetchSupplementalJson(url);
+  const chart = asRecord(payload)?.chart;
+  const result = firstArrayRecord(asRecord(chart)?.result);
+  const timestamps = asArray(result?.timestamp);
+  const indicators = asRecord(result?.indicators);
+  const quote = firstArrayRecord(indicators?.quote);
+
+  if (!quote) {
+    return [];
+  }
+
+  const closes = asArray(quote.close);
+  const opens = asArray(quote.open);
+  const highs = asArray(quote.high);
+  const lows = asArray(quote.low);
+  const volumes = asArray(quote.volume);
+
+  return timestamps
+    .map((timestamp, index): PricePoint | null => {
+      const seconds = numericValue(timestamp);
+      const close = numericValue(closes[index]);
+
+      if (!seconds || close === undefined || close <= 0) {
+        return null;
+      }
+
+      return {
+        date: new Date(seconds * 1000).toISOString(),
+        close,
+        open: numericValue(opens[index]),
+        high: numericValue(highs[index]),
+        low: numericValue(lows[index]),
+        volume: numericValue(volumes[index])
+      };
+    })
+    .filter((point): point is PricePoint => point !== null)
+    .sort(sortPricePointByDate);
+}
+
+async function fetchSupplementalJson(url: URL) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "Mozilla/5.0"
+      },
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`Supplemental chart feed returned HTTP ${response.status}.`);
+    }
+
+    return (await response.json()) as unknown;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isUsableLiveHistory(history: PricePoint[]) {
+  if (history.length < 180) {
+    return false;
+  }
+
+  const closes = history.map((point) => point.close).filter((close) => Number.isFinite(close) && close > 0);
+  const uniqueRoundedCloses = new Set(closes.map((close) => close.toFixed(4)));
+
+  return uniqueRoundedCloses.size >= Math.min(20, Math.floor(closes.length / 6));
+}
+
+function toYahooChartSymbol(symbol: string) {
+  return symbol.replace(/\.(A|B|C)$/i, "-$1");
+}
+
 function mapAlphaVantageHistory(payload: unknown): PricePoint[] {
   const series = asRecord(asRecord(payload)?.["Time Series (Daily)"]);
 
@@ -964,6 +1072,10 @@ function stringField(record: Record<string, unknown> | null | undefined, field: 
 function numberField(record: Record<string, unknown> | null | undefined, field: string) {
   const value = record?.[field];
 
+  return numericValue(value);
+}
+
+function numericValue(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }

@@ -67,10 +67,39 @@ import {
 import type { Assessment, InstrumentDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const initialInstrument = instruments[0];
-const coreCompareSymbols = ["VOO", "VTI", "QQQM", "XEQT"];
+const emptyInstrument: InstrumentDetail = {
+  symbol: "",
+  name: "Search a stock to start",
+  type: "Stock",
+  exchange: "",
+  price: 0,
+  changePercent: 0,
+  focus: "Search for a ticker, then add it to one of the tracking slots below.",
+  summary: "Search for a ticker to load live quote and chart history.",
+  beta: 0,
+  volatility: 0,
+  maxDrawdown: 0,
+  holdings: [],
+  sectors: [],
+  regions: [],
+  history: []
+};
+const emptyAssessment: Assessment = {
+  symbol: "",
+  direction: "uncertain",
+  confidence: 0,
+  timeHorizon: "No symbol",
+  summary: "Search a ticker to generate a quick take from its price history and news.",
+  bullCase: [],
+  bearCase: [],
+  keyRisks: [],
+  citations: [],
+  generatedAt: "",
+  notInvestmentAdvice: "For research only. This tool does not provide personalized financial, tax, or investment advice."
+};
+const initialInstrument = emptyInstrument;
+const coreCompareSymbols: string[] = [];
 const maxCompareFunds = 5;
-const quickSearches = ["VOO", "VTI", "XEQT", "VXUS", "BND", "SCHD", "NASDAQ"];
 const compareCandidates = instruments.filter((instrument) => instrument.type === "ETF");
 const chartRanges = ["1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "MAX"] as const;
 const chartStyles = ["Line", "Area", "Candles"] as const;
@@ -78,12 +107,13 @@ const chartScales = ["Price", "% Change"] as const;
 const chartSizes = ["Compact", "Focus", "Max"] as const;
 const refreshIntervals = [15_000, 30_000, 60_000] as const;
 const estimatedUsdToCadRate = 1.37;
-const trackerStorageKey = "advanced-stock-stalker.tracker.v1";
-const compareStorageKey = "advanced-stock-stalker.compare.v1";
-const trackerClientStorageKey = "advanced-stock-stalker.client.v1";
-const themeStorageKey = "advanced-stock-stalker.theme.v1";
+const trackerStorageKey = "advanced-stock-stalker.tracker.v2";
+const compareStorageKey = "advanced-stock-stalker.compare.v2";
+const trackerClientStorageKey = "advanced-stock-stalker.client.v2";
+const themeStorageKey = "advanced-stock-stalker.theme.v2";
+const stockSlotCount = 8;
 const workspacePanels = [
-  { id: "prospects", label: "List" },
+  { id: "prospects", label: "Stock Bar" },
   { id: "research", label: "Quick Take" },
   { id: "metrics", label: "Stats" },
   { id: "indexLens", label: "Fund Basics" },
@@ -110,14 +140,14 @@ const getWorkspaceServerSnapshot = () => false;
 
 export function StockDashboard() {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<InstrumentDetail[]>(instruments.slice(0, 7));
+  const [results, setResults] = useState<InstrumentDetail[]>([]);
   const [selected, setSelected] = useState<InstrumentDetail>(initialInstrument);
   const [compareSymbols, setCompareSymbols] = useState(coreCompareSymbols);
   const [trackerState, setTrackerState] = useState<TrackerState>(() => createDefaultTrackerState());
   const [isLocalStateHydrated, setIsLocalStateHydrated] = useState(false);
   const [trackerPersistence, setTrackerPersistence] = useState<TrackerPersistenceStatus>("loading");
   const [trackerLastSavedAt, setTrackerLastSavedAt] = useState<string | null>(null);
-  const [assessment, setAssessment] = useState<Assessment>(() => mockAssessment(initialInstrument.symbol));
+  const [assessment, setAssessment] = useState<Assessment>(() => emptyAssessment);
   const [isSearching, setIsSearching] = useState(false);
   const [isAssessing, setIsAssessing] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -143,9 +173,7 @@ export function StockDashboard() {
   const [showIndexLens, setShowIndexLens] = useState(true);
   const [showComparison, setShowComparison] = useState(true);
   const [showExposurePanels, setShowExposurePanels] = useState(true);
-  const [prospectWidth, setProspectWidth] = useState(320);
   const [researchWidth, setResearchWidth] = useState(390);
-  const [metricsWidth, setMetricsWidth] = useState(280);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState<(typeof refreshIntervals)[number]>(30_000);
   const [isHydratingDetail, setIsHydratingDetail] = useState(false);
@@ -154,6 +182,7 @@ export function StockDashboard() {
   const trackerClientIdRef = useRef<string | null>(null);
   const trackerRemoteAvailableRef = useRef(false);
   const trackerHasUserEditsRef = useRef(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const isWorkspaceReady = useSyncExternalStore(
     subscribeWorkspaceReady,
     getWorkspaceReadySnapshot,
@@ -197,21 +226,16 @@ export function StockDashboard() {
   const isSelectedWatched = trackerState.watchlist.includes(selected.symbol);
   const nextCompareReplacement =
     compareSymbols.length >= maxCompareFunds && !compareSymbols.includes(selected.symbol) ? compareSymbols[0] : null;
+  const hasSelectedInstrument = Boolean(selected.symbol);
   const prospectsVisible = showProspects && chartSize !== "Max";
   const researchRailVisible = showResearchRail && chartSize !== "Max";
   const metricsVisible = showMetrics && chartSize !== "Max";
   const comparisonVisible = showComparison && chartSize !== "Max";
-  const exposurePanelsVisible = showExposurePanels && chartSize !== "Max";
-  const workspaceColumns = [
-    prospectsVisible ? `${prospectWidth}px` : null,
-    "minmax(0, 1fr)",
-    researchRailVisible ? `${researchWidth}px` : null
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const exposurePanelsVisible = hasSelectedInstrument && showExposurePanels && chartSize !== "Max";
+  const workspaceColumns = researchRailVisible ? `minmax(0, 1fr) 10px ${researchWidth}px` : "minmax(0, 1fr)";
   const workspaceStyle = {
     "--workspace-columns": workspaceColumns,
-    "--metric-column": `${metricsWidth}px`
+    "--metric-column": "142px"
   } as CSSProperties;
   const panelStates = useMemo<WorkspacePanel[]>(
     () =>
@@ -240,13 +264,20 @@ export function StockDashboard() {
 
   const hydrateSelectedDetail = useCallback(
     async (symbol: string, options: { refresh?: boolean; silent?: boolean } = {}) => {
+      const normalizedSymbol = symbol.trim();
+
+      if (!normalizedSymbol) {
+        setDetailError(null);
+        return;
+      }
+
       if (!options.silent) {
         setIsHydratingDetail(true);
       }
 
       try {
         const search = options.refresh ? "?refresh=1" : "";
-        const response = await fetch(`/api/instruments/${encodeURIComponent(symbol)}${search}`);
+        const response = await fetch(`/api/instruments/${encodeURIComponent(normalizedSymbol)}${search}`);
         const payload = (await response.json()) as Partial<{ instrument: InstrumentDetail; error: string }>;
 
         if (!response.ok) {
@@ -390,7 +421,7 @@ export function StockDashboard() {
   }, [isLocalStateHydrated, trackerState]);
 
   useEffect(() => {
-    if (!autoRefresh) {
+    if (!autoRefresh || !selected.symbol) {
       return undefined;
     }
 
@@ -440,6 +471,13 @@ export function StockDashboard() {
     setQuery(nextQuery);
     setLastSearchQuery(normalizedQuery);
     setSearchError(null);
+
+    if (!normalizedQuery) {
+      setResults([]);
+      setIsSearching(false);
+      return;
+    }
+
     setIsSearching(true);
 
     try {
@@ -473,6 +511,10 @@ export function StockDashboard() {
   }
 
   function selectInstrument(instrument: InstrumentDetail) {
+    if (!instrument.symbol) {
+      return;
+    }
+
     setSelected(instrument);
     setIsAboutExpanded(false);
     setAssessment({
@@ -489,6 +531,10 @@ export function StockDashboard() {
   }
 
   async function handleAssess() {
+    if (!selected.symbol) {
+      return;
+    }
+
     setAssessmentError(null);
     setIsAssessing(true);
 
@@ -519,6 +565,10 @@ export function StockDashboard() {
   }
 
   function toggleCompare(symbol: string) {
+    if (!symbol) {
+      return;
+    }
+
     setCompareSymbols((current) => {
       if (current.includes(symbol)) {
         return current.filter((item) => item !== symbol);
@@ -537,6 +587,10 @@ export function StockDashboard() {
   }
 
   function toggleWatchSelected() {
+    if (!selected.symbol) {
+      return;
+    }
+
     markTrackerEdited();
 
     setTrackerState((current) => {
@@ -548,17 +602,47 @@ export function StockDashboard() {
         };
       }
 
-      const priceCad = toCadPrice(selected.price, selected);
+      const priceCad = toCadPrice(getDisplayPrice(selected), selected);
 
       return {
         ...current,
         watchlist: [...current.watchlist, selected.symbol],
-        alerts: [...current.alerts, createDefaultWatchAlert(selected, priceCad)]
+        alerts: current.alerts.some((alert) => alert.symbol === selected.symbol)
+          ? current.alerts
+          : [...current.alerts, createDefaultWatchAlert(selected, priceCad)]
+      };
+    });
+  }
+
+  function trackInstrument(instrument: InstrumentDetail) {
+    if (!instrument.symbol) {
+      return;
+    }
+
+    selectInstrument(instrument);
+    markTrackerEdited();
+
+    setTrackerState((current) => {
+      const watchlist = current.watchlist.includes(instrument.symbol)
+        ? current.watchlist
+        : [...current.watchlist, instrument.symbol];
+      const alerts = current.alerts.some((alert) => alert.symbol === instrument.symbol)
+        ? current.alerts
+        : [...current.alerts, createDefaultWatchAlert(instrument, toCadPrice(getDisplayPrice(instrument), instrument))];
+
+      return {
+        ...current,
+        watchlist,
+        alerts
       };
     });
   }
 
   function toggleSelectedPosition() {
+    if (!selected.symbol) {
+      return;
+    }
+
     markTrackerEdited();
 
     setTrackerState((current) => {
@@ -569,7 +653,7 @@ export function StockDashboard() {
         };
       }
 
-      const priceCad = toCadPrice(selected.price, selected);
+      const priceCad = toCadPrice(getDisplayPrice(selected), selected);
       const watchlist = current.watchlist.includes(selected.symbol)
         ? current.watchlist
         : [...current.watchlist, selected.symbol];
@@ -651,11 +735,24 @@ export function StockDashboard() {
   }
 
   function selectSymbolFromTracker(symbol: string) {
+    if (!symbol) {
+      return;
+    }
+
     const instrument = instrumentBySymbol.get(symbol);
 
     if (instrument) {
       handleSelect(instrument);
+      return;
     }
+
+    selectInstrument({
+      ...emptyInstrument,
+      symbol,
+      name: symbol,
+      focus: `Loading ${symbol} from the market data provider.`,
+      summary: "Live quote and history are loading for this symbol."
+    });
   }
 
   function scrollToTrackerAlerts() {
@@ -664,7 +761,7 @@ export function StockDashboard() {
 
   return (
     <TooltipProvider>
-      <main className="min-h-screen overflow-x-hidden px-4 py-4 text-foreground sm:px-6 lg:px-8">
+      <main className="min-h-screen overflow-x-hidden px-4 py-4 text-foreground sm:px-6 lg:px-8 lg:pb-28">
         <div className="mx-auto flex max-w-[1480px] flex-col gap-4">
           <header className="finance-shell z-30 rounded-lg border border-border bg-card/92 p-3 backdrop-blur-xl lg:sticky lg:top-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -684,6 +781,7 @@ export function StockDashboard() {
                 <div className="relative min-w-0 basis-full sm:basis-auto sm:w-[390px]">
                   <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
+                    ref={searchInputRef}
                     type="search"
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
@@ -732,131 +830,52 @@ export function StockDashboard() {
             setChartSize={setChartSize}
             panels={panelStates}
             onPanelVisibilityChange={setPanelVisibility}
-            prospectWidth={prospectWidth}
-            setProspectWidth={setProspectWidth}
-            researchWidth={researchWidth}
-            setResearchWidth={setResearchWidth}
-            metricsWidth={metricsWidth}
-            setMetricsWidth={setMetricsWidth}
             isReady={isWorkspaceReady}
           />
 
           <section className={cn("workspace-grid grid gap-4", chartSize === "Max" && "max-chart")} style={workspaceStyle}>
-            {prospectsVisible ? (
-            <Card className="noise-panel focus-rail min-w-0">
-              <CardHeader>
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <CardTitle>Stock List</CardTitle>
-                    <CardDescription>ETFs and stocks you can open quickly.</CardDescription>
-                  </div>
-                  <Badge variant={searchError ? "warning" : "magenta"}>
-                    {isSearching ? "scanning" : `${results.length} live`}
-                  </Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <div className="rounded-md border border-border bg-background/35 p-3">
-                  <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
-                    <ListFilter className="size-3.5 text-primary" />
-                    Quick Picks
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {quickSearches.map((term) => (
-                      <Button
-                        key={term}
-                        type="button"
-                        variant={query.trim().toUpperCase() === term ? "secondary" : "outline"}
-                        size="sm"
-                        className="h-7 px-2.5 font-mono"
-                        onClick={() => void handleSearch(term)}
-                      >
-                        {term}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-
-                {searchError ? (
-                  <StateNotice icon={<CircleAlert />} title="Search fallback" tone="warning">
-                    {searchError} Local matches are shown when available.
-                  </StateNotice>
-                ) : null}
-
-                {isSearching ? (
-                  <ProspectQueueSkeleton />
-                ) : results.length ? (
-                  results.map((instrument) => (
-                    <button
-                      type="button"
-                      key={instrument.symbol}
-                      onClick={() => handleSelect(instrument)}
-                      className={cn(
-                        "w-full rounded-md border p-3 text-left transition hover:border-primary/45 hover:bg-primary/7",
-                        selected.symbol === instrument.symbol
-                          ? "border-primary/55 bg-primary/10"
-                          : "border-border bg-background/35"
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-sm font-semibold text-foreground">{instrument.symbol}</span>
-                            <Badge variant="secondary">{instrument.type}</Badge>
-                          </div>
-                          <p className="mt-1 truncate text-sm text-muted-foreground">{instrument.name}</p>
-                        </div>
-                        <ChangePill value={instrument.changePercent} />
-                      </div>
-                      <p className="mt-3 line-clamp-2 text-xs leading-5 text-muted-foreground">{instrument.focus}</p>
-                    </button>
-                  ))
-                ) : (
-                  <EmptyState
-                    icon={<SearchX />}
-                    title={lastSearchQuery ? `No matches for "${lastSearchQuery}"` : "No prospects found"}
-                    description="Try another ticker or choose a quick pick."
-                  >
-                    <Button type="button" variant="secondary" size="sm" onClick={() => void handleSearch("")}>
-                      <RefreshCw />
-                      Reset queue
-                    </Button>
-                  </EmptyState>
-                )}
-              </CardContent>
-            </Card>
-            ) : null}
-
             <div className="flex min-w-0 flex-col gap-4">
               <Card className="finance-card overflow-hidden">
                 <CardHeader className="pb-3">
                   <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-start 2xl:justify-between">
-                    <div className="flex min-w-0 gap-4">
+                    <div className="flex min-w-0 items-start gap-4">
                       <InstrumentLogo instrument={selected} />
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                          <span>{selected.exchange}</span>
-                          <span aria-hidden="true">-</span>
-                          <span className="font-mono">{selected.symbol}</span>
-                          {selected.benchmark ? (
+                          {hasSelectedInstrument ? (
                             <>
+                              <span>{selected.exchange || selected.type}</span>
                               <span aria-hidden="true">-</span>
-                              <span>{selected.benchmark}</span>
+                              <span className="font-mono">{selected.symbol}</span>
+                              {selected.benchmark ? (
+                                <>
+                                  <span aria-hidden="true">-</span>
+                                  <span>{selected.benchmark}</span>
+                                </>
+                              ) : null}
                             </>
-                          ) : null}
+                          ) : (
+                            <span>No stock loaded</span>
+                          )}
                         </div>
-                        <CardTitle className="mt-1 truncate text-2xl leading-tight sm:text-3xl xl:text-4xl">
-                          {selected.name}
+                        <CardTitle className="mt-1 max-w-[920px] break-words text-2xl leading-tight sm:text-3xl xl:text-4xl">
+                          {hasSelectedInstrument ? selected.name : "Search a ticker to start"}
                         </CardTitle>
                         <div className="mt-5 flex flex-wrap items-end gap-x-3 gap-y-2">
                           <span className="text-5xl font-normal leading-none tracking-normal text-foreground">
-                            {formatCurrency(selectedDisplayPrice).replace("$", "")}
+                            {hasSelectedInstrument && selectedDisplayPrice > 0
+                              ? formatCurrency(selectedDisplayPrice).replace("$", "")
+                              : "n/a"}
                           </span>
-                          <span className="pb-1 text-base text-muted-foreground">{selectedDisplayCurrency}</span>
-                          <ChangePill value={selected.changePercent} large />
+                          <span className="pb-1 text-base text-muted-foreground">
+                            {hasSelectedInstrument ? selectedDisplayCurrency : ""}
+                          </span>
+                          {hasSelectedInstrument ? <ChangePill value={selected.changePercent} large /> : null}
                         </div>
                         <p className="mt-2 text-sm text-muted-foreground">
-                          {getCadPriceNote(selected)} · Data window {marketSignal.dataWindowLabel}
+                          {hasSelectedInstrument
+                            ? `${getCadPriceNote(selected)} - Data window ${marketSignal.dataWindowLabel}`
+                            : "Use search, then add stocks into the bottom tracking slots."}
                         </p>
                       </div>
                     </div>
@@ -867,6 +886,7 @@ export function StockDashboard() {
                           variant={isSelectedWatched ? "secondary" : "outline"}
                           onClick={toggleWatchSelected}
                           aria-pressed={isSelectedWatched}
+                          disabled={!hasSelectedInstrument}
                           data-testid="selected-watch-toggle"
                         >
                           {isSelectedWatched ? <Check /> : <Bell />}
@@ -877,25 +897,27 @@ export function StockDashboard() {
                           variant={selectedPosition ? "secondary" : "outline"}
                           onClick={toggleSelectedPosition}
                           aria-pressed={Boolean(selectedPosition)}
+                          disabled={!hasSelectedInstrument}
                           data-testid="selected-position-toggle"
                         >
                           {selectedPosition ? <Check /> : <CircleDollarSign />}
                           {selectedPosition ? "Position" : "Track Position"}
                         </Button>
                         <Button
-                          variant={compareSymbols.includes(selected.symbol) ? "secondary" : "outline"}
+                          variant={hasSelectedInstrument && compareSymbols.includes(selected.symbol) ? "secondary" : "outline"}
                           onClick={() => toggleCompare(selected.symbol)}
-                          aria-pressed={compareSymbols.includes(selected.symbol)}
+                          aria-pressed={hasSelectedInstrument && compareSymbols.includes(selected.symbol)}
+                          disabled={!hasSelectedInstrument}
                         >
-                          {compareSymbols.includes(selected.symbol) ? <Check /> : <Plus />}
-                          {compareSymbols.includes(selected.symbol) ? "In compare" : "Add to compare"}
+                          {hasSelectedInstrument && compareSymbols.includes(selected.symbol) ? <Check /> : <Plus />}
+                          {hasSelectedInstrument && compareSymbols.includes(selected.symbol) ? "In compare" : "Add to compare"}
                         </Button>
-                        <Button onClick={handleAssess} disabled={isAssessing} aria-busy={isAssessing}>
+                        <Button onClick={handleAssess} disabled={!hasSelectedInstrument || isAssessing} aria-busy={isAssessing}>
                           {isAssessing ? <RefreshCw className="animate-spin" /> : <Sparkles />}
                           {isAssessing ? "Assessing" : "Assess"}
                         </Button>
                       </div>
-                      {nextCompareReplacement ? (
+                      {hasSelectedInstrument && nextCompareReplacement ? (
                         <p className="text-xs text-muted-foreground">Next add replaces {nextCompareReplacement}.</p>
                       ) : null}
                     </div>
@@ -925,11 +947,11 @@ export function StockDashboard() {
                     />
 
                     {metricsVisible ? (
-                    <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
-                      <Metric label="Expense" value={selected.expenseRatio ? formatPercent(selected.expenseRatio) : "n/a"} />
-                      <Metric label="Yield" value={selected.dividendYield ? formatPercent(selected.dividendYield) : "n/a"} />
-                      <Metric label="AUM" value={selected.aum ? formatCompactCurrency(selected.aum) : "n/a"} />
-                      <Metric label="Volatility" value={formatPercent(selected.volatility)} />
+                    <div className="grid grid-cols-2 gap-2 xl:grid-cols-1">
+                      <Metric label="Expense" value={selected.expenseRatio ? formatPercent(selected.expenseRatio) : "n/a"} compact />
+                      <Metric label="Yield" value={selected.dividendYield ? formatPercent(selected.dividendYield) : "n/a"} compact />
+                      <Metric label="AUM" value={selected.aum ? formatCompactCurrency(selected.aum) : "n/a"} compact />
+                      <Metric label="Volatility" value={formatPercent(selected.volatility)} compact />
                     </div>
                     ) : null}
                   </div>
@@ -962,12 +984,14 @@ export function StockDashboard() {
                       setRefreshIntervalMs={setRefreshIntervalMs}
                     />
                   ) : null}
-                  <AboutInstrumentStrip
-                    instrument={selected}
-                    expanded={isAboutExpanded}
-                    onExpandedChange={setIsAboutExpanded}
-                  />
-                  {showIndexLens ? (
+                  {hasSelectedInstrument ? (
+                    <AboutInstrumentStrip
+                      instrument={selected}
+                      expanded={isAboutExpanded}
+                      onExpandedChange={setIsAboutExpanded}
+                    />
+                  ) : null}
+                  {hasSelectedInstrument && showIndexLens ? (
                   <div className="mt-4">
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -1139,6 +1163,17 @@ export function StockDashboard() {
             </div>
 
             {researchRailVisible ? (
+              <ResizeHandle
+                label="quick take"
+                value={researchWidth}
+                min={300}
+                max={520}
+                invert
+                onChange={setResearchWidth}
+              />
+            ) : null}
+
+            {researchRailVisible ? (
             <div className="flex min-w-0 flex-col gap-4">
               <Card className="finance-card border-primary/20">
                 <CardHeader>
@@ -1177,22 +1212,30 @@ export function StockDashboard() {
                     {assessment.summary}
                     </p>
                   </div>
-                  <Tabs defaultValue="bull">
-                    <TabsList className="grid w-full grid-cols-3">
-                      <TabsTrigger value="bull">Bull</TabsTrigger>
-                      <TabsTrigger value="bear">Bear</TabsTrigger>
-                      <TabsTrigger value="risk">Risks</TabsTrigger>
-                    </TabsList>
-                    <TabsContent value="bull">
-                      <ThesisList items={assessment.bullCase} tone="green" />
-                    </TabsContent>
-                    <TabsContent value="bear">
-                      <ThesisList items={assessment.bearCase} tone="red" />
-                    </TabsContent>
-                    <TabsContent value="risk">
-                      <ThesisList items={assessment.keyRisks} tone="amber" />
-                    </TabsContent>
-                  </Tabs>
+                  {hasSelectedInstrument ? (
+                    <Tabs defaultValue="bull">
+                      <TabsList className="grid w-full grid-cols-3">
+                        <TabsTrigger value="bull">Bull</TabsTrigger>
+                        <TabsTrigger value="bear">Bear</TabsTrigger>
+                        <TabsTrigger value="risk">Risks</TabsTrigger>
+                      </TabsList>
+                      <TabsContent value="bull">
+                        <ThesisList items={assessment.bullCase} tone="green" />
+                      </TabsContent>
+                      <TabsContent value="bear">
+                        <ThesisList items={assessment.bearCase} tone="red" />
+                      </TabsContent>
+                      <TabsContent value="risk">
+                        <ThesisList items={assessment.keyRisks} tone="amber" />
+                      </TabsContent>
+                    </Tabs>
+                  ) : (
+                    <EmptyState
+                      icon={<Search />}
+                      title="No quick take yet"
+                      description="Search a ticker to calculate confidence, window, and thesis notes."
+                    />
+                  )}
                   <p className="text-xs leading-5 text-muted-foreground">{assessment.notInvestmentAdvice}</p>
                 </CardContent>
               </Card>
@@ -1208,7 +1251,8 @@ export function StockDashboard() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  {assessment.citations.map((article) => (
+                  {assessment.citations.length ? (
+                  assessment.citations.map((article) => (
                     <a
                       key={`${article.title}-${article.url}`}
                       href={article.url}
@@ -1223,12 +1267,30 @@ export function StockDashboard() {
                       <p className="mt-2 text-sm font-medium leading-5">{article.title}</p>
                       <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{article.snippet}</p>
                     </a>
-                  ))}
+                  ))
+                  ) : (
+                    <EmptyState icon={<Activity />} title="No articles loaded" description="Search a ticker to show related news." />
+                  )}
                 </CardContent>
               </Card>
             </div>
             ) : null}
           </section>
+
+          {prospectsVisible ? (
+            <StockSlotBar
+              results={results}
+              watchAlerts={watchAlertRows}
+              selectedSymbol={selected.symbol}
+              isSearching={isSearching}
+              searchError={searchError}
+              lastSearchQuery={lastSearchQuery}
+              onSelectInstrument={handleSelect}
+              onTrackInstrument={trackInstrument}
+              onSelectSymbol={selectSymbolFromTracker}
+              onFocusSearch={() => searchInputRef.current?.focus()}
+            />
+          ) : null}
 
           {exposurePanelsVisible ? (
           <section className="grid gap-4 lg:grid-cols-3">
@@ -1287,24 +1349,12 @@ function WorkspaceControls({
   setChartSize,
   panels,
   onPanelVisibilityChange,
-  prospectWidth,
-  setProspectWidth,
-  researchWidth,
-  setResearchWidth,
-  metricsWidth,
-  setMetricsWidth,
   isReady
 }: {
   chartSize: ChartSize;
   setChartSize: (size: ChartSize) => void;
   panels: WorkspacePanel[];
   onPanelVisibilityChange: (panelId: WorkspacePanelId, visible: boolean) => void;
-  prospectWidth: number;
-  setProspectWidth: (value: number) => void;
-  researchWidth: number;
-  setResearchWidth: (value: number) => void;
-  metricsWidth: number;
-  setMetricsWidth: (value: number) => void;
   isReady: boolean;
 }) {
   const visiblePanels = panels.filter((panel) => panel.visible);
@@ -1406,10 +1456,6 @@ function WorkspaceControls({
           onPointerDrop={handlePointerDrop}
           onBeginDrag={setDraggedPanel}
         />
-
-        <DockSlider label="List" value={prospectWidth} min={240} max={460} onChange={setProspectWidth} />
-        <DockSlider label="Take" value={researchWidth} min={300} max={540} onChange={setResearchWidth} />
-        <DockSlider label="Stats" value={metricsWidth} min={190} max={380} onChange={setMetricsWidth} />
       </div>
     </div>
   );
@@ -1440,7 +1486,9 @@ function PanelDropZone({
     <div
       className={cn(
         "flex h-9 shrink-0 items-center gap-1 rounded-md border px-2",
-        visible ? "border-primary/20 bg-primary/6" : "border-dashed border-fuchsia-300/25 bg-fuchsia-400/7"
+        visible
+          ? "border-primary/20 bg-primary/6"
+          : "border-dashed border-zinc-400/45 bg-zinc-100 text-zinc-950 dark:bg-zinc-200 dark:text-zinc-950"
       )}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => onDropPanel(event, visible)}
@@ -1448,7 +1496,7 @@ function PanelDropZone({
       data-panel-dropzone={visible ? "visible" : "hidden"}
       data-testid={visible ? "visible-panel-dock" : "hidden-panel-dock"}
     >
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <span className={cn("text-xs font-medium", visible ? "text-muted-foreground" : "text-zinc-950")}>{label}</span>
       {panels.length ? (
         panels.map((panel) => (
           <PanelDockChip
@@ -1462,7 +1510,14 @@ function PanelDropZone({
           />
         ))
       ) : (
-        <span className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">drop here</span>
+        <span
+          className={cn(
+            "rounded-md border px-2 py-1 text-xs",
+            visible ? "border-border text-muted-foreground" : "border-zinc-400/60 text-zinc-950"
+          )}
+        >
+          drop here
+        </span>
       )}
     </div>
   );
@@ -1525,7 +1580,7 @@ function PanelDockChip({
         "inline-flex h-7 items-center gap-1 rounded-md border px-2 text-xs font-medium transition",
         visible
           ? "border-primary/30 bg-primary/10 text-foreground hover:bg-primary/16"
-          : "border-fuchsia-300/30 bg-fuchsia-400/10 text-fuchsia-100 hover:bg-fuchsia-400/16"
+          : "border-zinc-400/55 bg-white text-zinc-950 hover:bg-zinc-100 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-100"
       )}
       aria-pressed={visible}
       data-testid={`panel-chip-${panel.id}`}
@@ -1536,34 +1591,55 @@ function PanelDockChip({
   );
 }
 
-function DockSlider({
+function ResizeHandle({
   label,
   value,
   min,
   max,
+  invert = false,
   onChange
 }: {
   label: string;
   value: number;
   min: number;
   max: number;
+  invert?: boolean;
   onChange: (value: number) => void;
 }) {
+  function handlePointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startValue = value;
+
+    const handlePointerMove = (pointerEvent: PointerEvent) => {
+      const delta = pointerEvent.clientX - startX;
+      const nextValue = startValue + (invert ? -delta : delta);
+
+      onChange(clamp(Math.round(nextValue / 10) * 10, min, max));
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp, { once: true });
+  }
+
   return (
-    <label className="flex h-9 shrink-0 items-center gap-2 rounded-md border border-border bg-background/35 px-2 text-xs text-muted-foreground">
-      <span>{label}</span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={10}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-        className="w-24 accent-primary"
-        aria-label={`${label} width`}
-      />
-      <span className="w-9 text-right font-mono text-foreground">{value}</span>
-    </label>
+    <button
+      type="button"
+      aria-label={`Resize ${label} panel`}
+      className="group hidden min-h-[220px] cursor-col-resize items-stretch justify-center rounded-md border border-transparent bg-transparent transition hover:border-primary/30 hover:bg-primary/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:flex"
+      onPointerDown={handlePointerDown}
+    >
+      <span className="my-3 w-1 rounded-full bg-border transition group-hover:bg-primary" />
+    </button>
   );
 }
 
@@ -1653,7 +1729,7 @@ function searchLocalInstruments(query: string) {
   const normalized = query.trim().toLowerCase();
 
   if (!normalized) {
-    return instruments.slice(0, 7);
+    return [];
   }
 
   return instruments
@@ -1745,6 +1821,17 @@ function getPortfolioRole(instrument: InstrumentDetail): { label: string; tone: 
 }
 
 function buildMarketSignal(instrument: InstrumentDetail): MarketSignal {
+  if (!instrument.symbol) {
+    return {
+      direction: "uncertain",
+      confidence: 0,
+      timeHorizon: "No symbol",
+      dataWindowLabel: "No data",
+      trendReturn: 0,
+      realizedVolatility: 0
+    };
+  }
+
   const normalizedPoints = normalizeHistoricalChartPoints(instrument);
   const points = normalizedPoints.length >= 8 ? normalizedPoints : buildChartPoints(instrument, "1Y");
   const sample = points.slice(-Math.min(points.length, 252));
@@ -2009,27 +2096,132 @@ function EmptyState({
   );
 }
 
-function ProspectQueueSkeleton() {
+function StockSlotBar({
+  results,
+  watchAlerts,
+  selectedSymbol,
+  isSearching,
+  searchError,
+  lastSearchQuery,
+  onSelectInstrument,
+  onTrackInstrument,
+  onSelectSymbol,
+  onFocusSearch
+}: {
+  results: InstrumentDetail[];
+  watchAlerts: WatchAlertRow[];
+  selectedSymbol: string;
+  isSearching: boolean;
+  searchError: string | null;
+  lastSearchQuery: string;
+  onSelectInstrument: (instrument: InstrumentDetail) => void;
+  onTrackInstrument: (instrument: InstrumentDetail) => void;
+  onSelectSymbol: (symbol: string) => void;
+  onFocusSearch: () => void;
+}) {
+  const trackedRows = watchAlerts.slice(0, stockSlotCount);
+  const emptySlotCount = Math.max(stockSlotCount - trackedRows.length, 0);
+
   return (
-    <div className="space-y-2" aria-busy="true" aria-live="polite">
-      <div className="flex items-center gap-2 rounded-md border border-primary/20 bg-primary/7 p-3 text-sm text-primary">
-        <RefreshCw className="size-4 animate-spin" />
-        Searching fund universe
-      </div>
-      {Array.from({ length: 4 }).map((_, index) => (
-        <div key={index} className="animate-pulse rounded-md border border-border bg-background/35 p-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="space-y-2">
-              <div className="h-3 w-16 rounded bg-secondary" />
-              <div className="h-3 w-36 rounded bg-secondary/80" />
-            </div>
-            <div className="h-6 w-16 rounded bg-secondary" />
+    <section
+      className="stock-slot-bar focus-rail rounded-lg border border-border bg-card/94 p-2 backdrop-blur-xl lg:fixed lg:inset-x-8 lg:bottom-3 lg:z-40 lg:mx-auto lg:max-w-[1480px]"
+      data-testid="stock-slot-bar"
+    >
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        <div
+          className={cn(
+            "flex h-[64px] min-w-[136px] flex-col justify-center rounded-md border px-3",
+            searchError ? "border-amber-500/30 bg-amber-400/10" : "border-primary/20 bg-primary/7"
+          )}
+        >
+          <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+            {searchError ? <CircleAlert className="size-4 text-amber-600 dark:text-amber-200" /> : <ListFilter className="size-4 text-primary" />}
+            Stock Bar
           </div>
-          <div className="mt-4 h-3 w-full rounded bg-secondary/80" />
-          <div className="mt-2 h-3 w-2/3 rounded bg-secondary/60" />
+          <div className="mt-1 truncate text-xs text-muted-foreground">
+            {isSearching ? "Searching" : searchError ? "Fallback results" : `${trackedRows.length} tracked`}
+          </div>
         </div>
-      ))}
-    </div>
+
+        {isSearching ? (
+          Array.from({ length: 3 }).map((_, index) => (
+            <div
+              key={index}
+              className="h-[64px] min-w-[154px] animate-pulse rounded-md border border-border bg-secondary/45 p-3"
+              aria-busy="true"
+              aria-live="polite"
+            >
+              <div className="h-3 w-16 rounded bg-background/80" />
+              <div className="mt-3 h-3 w-24 rounded bg-background/70" />
+            </div>
+          ))
+        ) : results.length ? (
+          results.map((instrument) => {
+            const isSelected = selectedSymbol === instrument.symbol;
+
+            return (
+              <div
+                key={instrument.symbol}
+                className={cn(
+                  "flex h-[64px] min-w-[210px] max-w-[240px] items-stretch gap-2 rounded-md border bg-background/45 p-2 transition",
+                  isSelected ? "border-primary/55 bg-primary/10" : "border-border"
+                )}
+              >
+                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => onSelectInstrument(instrument)}>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-sm font-semibold text-foreground">{instrument.symbol}</span>
+                    <Badge variant="outline">{instrument.type}</Badge>
+                  </div>
+                  <p className="mt-1 truncate text-sm text-muted-foreground">{instrument.name}</p>
+                </button>
+                <Button type="button" variant="secondary" size="sm" className="h-8 self-center" onClick={() => onTrackInstrument(instrument)}>
+                  <Plus />
+                  Add
+                </Button>
+              </div>
+            );
+          })
+        ) : lastSearchQuery ? (
+          <div className="flex h-[64px] min-w-[220px] items-center gap-2 rounded-md border border-dashed border-border bg-background/35 px-3 text-sm text-muted-foreground">
+            <SearchX className="size-4 text-primary" />
+            No matches for <span className="font-mono text-foreground">{lastSearchQuery}</span>.
+          </div>
+        ) : null}
+
+        {trackedRows.map((row) => (
+          <button
+            type="button"
+            key={row.symbol}
+            onClick={() => onSelectSymbol(row.symbol)}
+            className={cn(
+              "h-[64px] min-w-[156px] rounded-md border p-2 text-left transition hover:border-primary/45 hover:bg-primary/7",
+              selectedSymbol === row.symbol ? "border-primary/55 bg-primary/10" : "border-border bg-background/45"
+            )}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="font-mono text-sm font-semibold text-foreground">{row.symbol}</div>
+              <ChangePill value={row.instrument.changePercent} />
+            </div>
+            <p className="mt-1 truncate text-xs text-muted-foreground">{row.instrument.name}</p>
+            <div className="mt-1 truncate text-xs text-muted-foreground">
+              {row.priceCad > 0 ? formatCadCurrency(row.priceCad) : "No price"} CAD
+            </div>
+          </button>
+        ))}
+
+        {Array.from({ length: emptySlotCount }).map((_, index) => (
+          <button
+            type="button"
+            key={`empty-${index}`}
+            onClick={onFocusSearch}
+            className="flex h-[64px] min-w-[132px] items-center justify-center gap-2 rounded-md border border-dashed border-border bg-background/35 px-3 text-sm text-muted-foreground transition hover:border-primary/45 hover:bg-primary/7 hover:text-foreground"
+          >
+            <Plus className="size-4" />
+            Add stock
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -2052,14 +2244,14 @@ function ChangePill({ value, large = false }: { value: number; large?: boolean }
   );
 }
 
-function Metric({ label, value, icon }: { label: string; value: string; icon?: ReactNode }) {
+function Metric({ label, value, icon, compact = false }: { label: string; value: string; icon?: ReactNode; compact?: boolean }) {
   return (
-    <div className="rounded-md border border-border bg-secondary/45 p-3">
+    <div className={cn("rounded-md border border-border bg-secondary/45", compact ? "p-2" : "p-3")}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         {icon ? <span className="[&_svg]:size-3.5">{icon}</span> : null}
         {label}
       </div>
-      <div className="mt-1 text-lg font-semibold tracking-normal">{value}</div>
+      <div className={cn("mt-1 font-semibold tracking-normal", compact ? "text-sm" : "text-lg")}>{value}</div>
     </div>
   );
 }
@@ -2116,6 +2308,7 @@ function TrackerCommandCenter({
   const triggeredAlerts = watchAlerts.filter((row) => row.status === "below" || row.status === "above");
   const selectedMarketValue = selectedPosition ? selectedPosition.shares * selectedPriceCad : 0;
   const persistenceBadge = getTrackerPersistenceBadge(persistenceStatus, isHydrated, lastSavedAt);
+  const hasSelected = Boolean(selected.symbol);
 
   return (
     <Card className="focus-rail" data-testid="portfolio-tracker">
@@ -2160,13 +2353,15 @@ function TrackerCommandCenter({
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-sm font-semibold">{selected.symbol}</span>
-                  <ChangePill value={selected.changePercent} />
+                  <span className="font-mono text-sm font-semibold">{hasSelected ? selected.symbol : "No selection"}</span>
+                  {hasSelected ? <ChangePill value={selected.changePercent} /> : null}
                   {selectedWatchRow ? <AlertStatusBadge status={selectedWatchRow.status} /> : null}
                 </div>
-                <p className="mt-1 truncate text-sm text-muted-foreground">{selected.name}</p>
+                <p className="mt-1 truncate text-sm text-muted-foreground">
+                  {hasSelected ? selected.name : "Search a ticker or choose a tracking slot."}
+                </p>
                 <p className="mt-2 text-xs text-muted-foreground">
-                  {formatCadCurrency(selectedPriceCad)} CAD current tracker price
+                  {hasSelected ? `${formatCadCurrency(selectedPriceCad)} CAD current tracker price` : "Alerts and positions appear after you select a stock."}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -2176,6 +2371,7 @@ function TrackerCommandCenter({
                   size="sm"
                   onClick={onToggleWatch}
                   aria-pressed={selectedIsWatched}
+                  disabled={!hasSelected}
                 >
                   {selectedIsWatched ? <Check /> : <Bell />}
                   {selectedIsWatched ? "Watched" : "Watch"}
@@ -2186,6 +2382,7 @@ function TrackerCommandCenter({
                   size="sm"
                   onClick={onTogglePosition}
                   aria-pressed={Boolean(selectedPosition)}
+                  disabled={!hasSelected}
                 >
                   {selectedPosition ? <Check /> : <Plus />}
                   {selectedPosition ? "Tracked" : "Position"}
@@ -2193,7 +2390,7 @@ function TrackerCommandCenter({
               </div>
             </div>
 
-            {selectedIsWatched ? (
+            {hasSelected && selectedIsWatched ? (
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
                 <label className="text-xs text-muted-foreground">
                   Low alert CAD
@@ -2222,7 +2419,9 @@ function TrackerCommandCenter({
               </div>
             ) : (
               <StateNotice icon={<Bell />} title="Not watched" tone="primary">
-                Add {selected.symbol} to the watchlist to track CAD price bands.
+                {hasSelected
+                  ? `Add ${selected.symbol} to the watchlist to track CAD price bands.`
+                  : "Search a ticker to create watch alerts and positions."}
               </StateNotice>
             )}
 
@@ -2583,12 +2782,15 @@ function ChartTerminal({
         } satisfies CSSProperties)
       : undefined;
   const chartHeightClass = {
-    Compact: "h-[300px] min-h-[300px]",
-    Focus: "h-[430px] min-h-[430px]",
-    Max: "h-[620px] min-h-[620px] md:h-[700px] md:min-h-[700px]"
+    Compact: "h-[340px] min-h-[340px]",
+    Focus: "h-[520px] min-h-[520px]",
+    Max: "h-[720px] min-h-[720px] md:h-[820px] md:min-h-[820px]"
   } satisfies Record<ChartSize, string>;
-  const sideRailClass = cn("grid gap-2 sm:grid-cols-2", size === "Max" ? "2xl:grid-cols-2" : "xl:grid-cols-1");
+  const sideRailClass = cn("grid gap-2 sm:grid-cols-2", size === "Max" ? "2xl:grid-cols-2" : "2xl:grid-cols-1");
   const lastRefreshLabel = lastHydratedAt ? formatClock(lastHydratedAt) : "pending";
+  const hasChartData =
+    Boolean(instrument.symbol) &&
+    (instrument.price > 0 || instrument.history.some((point) => Number.isFinite(point.close) && point.close > 0));
 
   function handleChartPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     if (!chart.linePoints.length) {
@@ -2611,30 +2813,58 @@ function ChartTerminal({
     setHoverIndex(nextIndex);
   }
 
+  if (!hasChartData) {
+    return (
+      <div className="rounded-xl border border-border bg-card p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">No symbol</Badge>
+              {isHydrating ? <Badge variant="secondary">hydrating</Badge> : null}
+            </div>
+            <div className="mt-3">
+              <p className="text-sm text-muted-foreground">Last price</p>
+              <p className="text-4xl font-semibold tracking-normal">n/a</p>
+            </div>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={onToggleSettings}>
+            <SlidersHorizontal />
+            Settings
+          </Button>
+        </div>
+        <div
+          className={cn(
+            "mt-4 flex items-center justify-center rounded-lg border border-dashed border-border bg-background p-6 text-center",
+            chartHeightClass[size]
+          )}
+        >
+          <div>
+            <div className="mx-auto flex size-12 items-center justify-center rounded-md border border-border bg-secondary/60 text-primary">
+              <Search className="size-5" />
+            </div>
+            <div className="mt-3 text-sm font-medium text-foreground">Search a ticker to load the chart</div>
+            <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
+              Live quote and history will replace this empty chart area after a symbol loads.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-xl border border-border bg-card p-4">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={instrument.history.length > 126 ? "default" : "warning"}>
-              {instrument.history.length > 126 ? `${instrument.history.length} history bars` : "Mock feed"}
-            </Badge>
-            <Badge variant={autoRefresh ? "magenta" : "outline"}>{autoRefresh ? "Live pulse" : "Manual"}</Badge>
-            <Badge variant="outline">{range}</Badge>
-            {showBenchmark && benchmark ? <Badge variant="secondary">Benchmark: {benchmark.symbol}</Badge> : null}
-            {isHydrating ? <Badge variant="secondary">hydrating</Badge> : null}
-          </div>
-          <div className="mt-3 flex flex-wrap items-end gap-3">
-            <div>
-              <p className="text-sm text-muted-foreground">Last price</p>
-              <p className="text-4xl font-semibold tracking-normal">{formatCurrency(latestValue)}</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {formatCadCurrency(toCadPrice(latestValue, instrument))} CAD - {getCadPriceNote(instrument)}
-              </p>
-            </div>
-            <ChangePill value={totalChange} large />
-          </div>
-          <p className="mt-2 text-xs text-muted-foreground">Last refresh {lastRefreshLabel}</p>
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <Badge variant={instrument.history.length > 126 ? "default" : "warning"}>
+            {instrument.history.length > 126 ? `${instrument.history.length} history bars` : "Mock feed"}
+          </Badge>
+          <Badge variant={autoRefresh ? "magenta" : "outline"}>{autoRefresh ? "Live pulse" : "Manual"}</Badge>
+          <Badge variant="outline">{range}</Badge>
+          {showBenchmark && benchmark ? <Badge variant="secondary">Benchmark: {benchmark.symbol}</Badge> : null}
+          {isHydrating ? <Badge variant="secondary">hydrating</Badge> : null}
+          <ChangePill value={totalChange} />
+          <span className="text-xs text-muted-foreground">Refresh {lastRefreshLabel}</span>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -2653,42 +2883,42 @@ function ChartTerminal({
         </div>
       </div>
 
-      <div className="mt-5 flex flex-wrap gap-1 border-b border-border">
-        {chartRanges.map((item) => (
-          <button
-            key={item}
-            type="button"
-            className={cn(
-              "h-10 border-b-2 px-3 text-sm font-medium transition",
-              item === range
-                ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            )}
-            onClick={() => onRangeChange(item)}
-          >
-            {item}
-          </button>
-        ))}
+      <div className="mt-3 flex flex-col gap-2 border-b border-border lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-wrap gap-1">
+          {chartRanges.map((item) => (
+            <button
+              key={item}
+              type="button"
+              className={cn(
+                "h-9 border-b-2 px-3 text-sm font-medium transition",
+                item === range
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              )}
+              onClick={() => onRangeChange(item)}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-2 pb-2">
+          {chartStyles.map((item) => (
+            <Button
+              key={item}
+              type="button"
+              variant={item === style ? "secondary" : "outline"}
+              size="sm"
+              className="h-8 px-3"
+              onClick={() => onStyleChange(item)}
+            >
+              {item}
+            </Button>
+          ))}
+        </div>
       </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {chartStyles.map((item) => (
-          <Button
-            key={item}
-            type="button"
-            variant={item === style ? "secondary" : "outline"}
-            size="sm"
-            className="h-8 px-3"
-            onClick={() => onStyleChange(item)}
-          >
-            {item}
-          </Button>
-        ))}
-      </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        {range} range: {rangeLabel}. Hover the chart for the exact date, CAD price, return, and volume.
-      </p>
+      <p className="mt-2 text-xs text-muted-foreground">{range} range: {rangeLabel}.</p>
 
-      <div className={cn("mt-4 grid gap-3", size === "Max" ? "2xl:grid-cols-[minmax(0,1fr)_180px]" : "xl:grid-cols-[minmax(0,1fr)_120px]")}>
+      <div className={cn("mt-4 grid gap-3", size === "Max" ? "2xl:grid-cols-[minmax(0,1fr)_150px]" : "2xl:grid-cols-[minmax(0,1fr)_112px]")}>
         <div
           className={cn("relative overflow-visible rounded-lg border border-border bg-background p-3", chartHeightClass[size])}
           data-testid="price-chart-panel"
@@ -2866,10 +3096,10 @@ function ChartTerminal({
         </div>
 
         <div className={sideRailClass}>
-          <Metric label={`${range} Return`} value={formatPercent(totalChange, { signed: true })} />
-          <Metric label="High (CAD)" value={formatCadCurrency(toCadPrice(rangeHigh, instrument))} />
-          <Metric label="Low (CAD)" value={formatCadCurrency(toCadPrice(rangeLow, instrument))} />
-          <Metric label="Avg Volume" value={formatCompactNumber(averageVolume)} />
+          <Metric label={`${range} Return`} value={formatPercent(totalChange, { signed: true })} compact />
+          <Metric label="High (CAD)" value={formatCadCurrency(toCadPrice(rangeHigh, instrument))} compact />
+          <Metric label="Low (CAD)" value={formatCadCurrency(toCadPrice(rangeLow, instrument))} compact />
+          <Metric label="Avg Volume" value={formatCompactNumber(averageVolume)} compact />
         </div>
       </div>
     </div>

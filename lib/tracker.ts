@@ -65,21 +65,11 @@ export type WatchAlertRow = {
   distancePercent: number | null;
 };
 
-const defaultAddedAt = "2026-06-01T12:00:00.000Z";
-
 export function createDefaultTrackerState(): TrackerState {
   return {
-    watchlist: ["VOO", "XEQT", "NVDA"],
-    positions: [
-      { symbol: "VOO", shares: 12, averageCostCad: 655, addedAt: defaultAddedAt },
-      { symbol: "XEQT", shares: 80, averageCostCad: 36.2, addedAt: defaultAddedAt },
-      { symbol: "BND", shares: 25, averageCostCad: 100.2, addedAt: defaultAddedAt }
-    ],
-    alerts: [
-      { symbol: "VOO", lowTargetCad: 665, highTargetCad: 735, createdAt: defaultAddedAt },
-      { symbol: "XEQT", lowTargetCad: 36, highTargetCad: 42, createdAt: defaultAddedAt },
-      { symbol: "NVDA", lowTargetCad: 230, highTargetCad: 275, createdAt: defaultAddedAt }
-    ]
+    watchlist: [],
+    positions: [],
+    alerts: []
   };
 }
 
@@ -111,8 +101,8 @@ export function normalizeStoredTrackerState(value: unknown): TrackerState {
 
   return {
     watchlist: uniqueSymbols([...watchlist, ...symbolsFromAlerts]),
-    positions: dedupePositions(positions.length ? positions : fallback.positions),
-    alerts: dedupeAlerts(alerts.length ? alerts : fallback.alerts)
+    positions: dedupePositions(positions),
+    alerts: dedupeAlerts(alerts)
   };
 }
 
