@@ -18,6 +18,8 @@ import {
   ArrowUpRight,
   Bell,
   CandlestickChart,
+  ChevronDown,
+  ChevronUp,
   ChartPie,
   Check,
   CircleAlert,
@@ -27,6 +29,7 @@ import {
   Landmark,
   Layers3,
   ListFilter,
+  Moon,
   Plus,
   Radar,
   RefreshCw,
@@ -35,6 +38,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Sun,
   Target,
   X,
   Zap
@@ -68,7 +72,7 @@ const coreCompareSymbols = ["VOO", "VTI", "QQQM", "XEQT"];
 const maxCompareFunds = 5;
 const quickSearches = ["VOO", "VTI", "XEQT", "VXUS", "BND", "SCHD", "NASDAQ"];
 const compareCandidates = instruments.filter((instrument) => instrument.type === "ETF");
-const chartRanges = ["1M", "3M", "6M", "1Y", "5Y", "MAX"] as const;
+const chartRanges = ["1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "MAX"] as const;
 const chartStyles = ["Line", "Area", "Candles"] as const;
 const chartScales = ["Price", "% Change"] as const;
 const chartSizes = ["Compact", "Focus", "Max"] as const;
@@ -77,6 +81,7 @@ const estimatedUsdToCadRate = 1.37;
 const trackerStorageKey = "advanced-stock-stalker.tracker.v1";
 const compareStorageKey = "advanced-stock-stalker.compare.v1";
 const trackerClientStorageKey = "advanced-stock-stalker.client.v1";
+const themeStorageKey = "advanced-stock-stalker.theme.v1";
 const workspacePanels = [
   { id: "prospects", label: "List" },
   { id: "research", label: "Quick Take" },
@@ -90,6 +95,7 @@ type ChartRange = (typeof chartRanges)[number];
 type ChartStyle = (typeof chartStyles)[number];
 type ChartScale = (typeof chartScales)[number];
 type ChartSize = (typeof chartSizes)[number];
+type ThemeMode = "light" | "dark";
 type TrackerPersistenceStatus = "loading" | "local" | "syncing" | "synced" | "error";
 type WorkspacePanelId = (typeof workspacePanels)[number]["id"];
 type WorkspacePanel = {
@@ -127,6 +133,10 @@ export function StockDashboard() {
   const [showCrosshair, setShowCrosshair] = useState(true);
   const [showChartSettings, setShowChartSettings] = useState(true);
   const [chartSize, setChartSize] = useState<ChartSize>("Focus");
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() =>
+    readStringFromStorage(themeStorageKey) === "dark" ? "dark" : "light"
+  );
+  const [isAboutExpanded, setIsAboutExpanded] = useState(false);
   const [showProspects, setShowProspects] = useState(true);
   const [showResearchRail, setShowResearchRail] = useState(true);
   const [showMetrics, setShowMetrics] = useState(true);
@@ -164,7 +174,10 @@ export function StockDashboard() {
   );
 
   const indexInsights = useMemo(() => buildIndexInsights(selected), [selected]);
+  const marketSignal = useMemo(() => buildMarketSignal(selected), [selected]);
   const selectedBenchmark = useMemo(() => compareFunds.find((fund) => fund.symbol !== selected.symbol), [compareFunds, selected.symbol]);
+  const selectedDisplayPrice = getDisplayPrice(selected);
+  const selectedDisplayCurrency = getInstrumentCurrencyLabel(selected);
   const portfolioAnalytics = useMemo(
     () => buildPortfolioAnalytics(trackerState.positions, instrumentBySymbol, getInstrumentCadPrice),
     [instrumentBySymbol, trackerState.positions]
@@ -219,6 +232,11 @@ export function StockDashboard() {
       })),
     [showComparison, showExposurePanels, showIndexLens, showMetrics, showProspects, showResearchRail]
   );
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", themeMode === "dark");
+    writeStringToStorage(themeStorageKey, themeMode);
+  }, [themeMode]);
 
   const hydrateSelectedDetail = useCallback(
     async (symbol: string, options: { refresh?: boolean; silent?: boolean } = {}) => {
@@ -456,6 +474,7 @@ export function StockDashboard() {
 
   function selectInstrument(instrument: InstrumentDetail) {
     setSelected(instrument);
+    setIsAboutExpanded(false);
     setAssessment({
       ...mockAssessment(instrument.symbol),
       citations: newsBySymbol[instrument.symbol] ?? newsBySymbol.VOO
@@ -645,12 +664,12 @@ export function StockDashboard() {
 
   return (
     <TooltipProvider>
-      <main className="min-h-screen px-4 py-4 text-foreground sm:px-6 lg:px-8">
-        <div className="mx-auto flex max-w-[1500px] flex-col gap-4">
-          <header className="focus-rail z-30 rounded-lg border border-white/10 bg-background/82 p-3 backdrop-blur-xl lg:sticky lg:top-4">
+      <main className="min-h-screen overflow-x-hidden px-4 py-4 text-foreground sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-[1480px] flex-col gap-4">
+          <header className="finance-shell z-30 rounded-lg border border-border bg-card/92 p-3 backdrop-blur-xl lg:sticky lg:top-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex items-center gap-3">
-                <div className="flex size-10 items-center justify-center rounded-md border border-primary/30 bg-primary/10 text-primary">
+                <div className="flex size-10 items-center justify-center rounded-md border border-primary/20 bg-primary/10 text-primary">
                   <CandlestickChart className="size-5" />
                 </div>
                 <div>
@@ -661,8 +680,8 @@ export function StockDashboard() {
                 </div>
               </div>
 
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <div className="relative min-w-0 sm:w-[390px]">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative min-w-0 basis-full sm:basis-auto sm:w-[390px]">
                   <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     type="search"
@@ -678,7 +697,7 @@ export function StockDashboard() {
                     className="pl-9"
                   />
                 </div>
-                <Button onClick={() => void handleSearch()} disabled={isSearching}>
+                <Button className="min-w-[140px] flex-1 sm:flex-none" onClick={() => void handleSearch()} disabled={isSearching}>
                   {isSearching ? <RefreshCw className="animate-spin" /> : <Search />}
                   Search
                 </Button>
@@ -689,6 +708,20 @@ export function StockDashboard() {
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>Watch alerts</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      aria-label={themeMode === "dark" ? "Use light mode" : "Use dark mode"}
+                      onClick={() => setThemeMode((mode) => (mode === "dark" ? "light" : "dark"))}
+                    >
+                      {themeMode === "dark" ? <Sun /> : <Moon />}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{themeMode === "dark" ? "Light mode" : "Dark mode"}</TooltipContent>
                 </Tooltip>
               </div>
             </div>
@@ -708,9 +741,9 @@ export function StockDashboard() {
             isReady={isWorkspaceReady}
           />
 
-          <section className="workspace-grid grid gap-4" style={workspaceStyle}>
+          <section className={cn("workspace-grid grid gap-4", chartSize === "Max" && "max-chart")} style={workspaceStyle}>
             {prospectsVisible ? (
-            <Card className="noise-panel focus-rail">
+            <Card className="noise-panel focus-rail min-w-0">
               <CardHeader>
                 <div className="flex items-center justify-between gap-2">
                   <div>
@@ -723,7 +756,7 @@ export function StockDashboard() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-2">
-                <div className="rounded-md border border-white/10 bg-background/35 p-3">
+                <div className="rounded-md border border-border bg-background/35 p-3">
                   <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
                     <ListFilter className="size-3.5 text-primary" />
                     Quick Picks
@@ -795,21 +828,37 @@ export function StockDashboard() {
             ) : null}
 
             <div className="flex min-w-0 flex-col gap-4">
-              <Card className="noise-panel focus-rail overflow-hidden">
+              <Card className="finance-card overflow-hidden">
                 <CardHeader className="pb-3">
-                  <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-start 2xl:justify-between">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge>{selected.exchange}</Badge>
-                        {selected.benchmark ? <Badge variant="outline">{selected.benchmark}</Badge> : null}
-                      </div>
-                      <CardTitle className="mt-4 text-2xl leading-tight sm:text-3xl xl:text-4xl">
-                        {selected.symbol}
-                        <span className="ml-2 text-lg font-normal text-muted-foreground sm:ml-3 sm:text-xl xl:text-2xl">
+                  <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-start 2xl:justify-between">
+                    <div className="flex min-w-0 gap-4">
+                      <InstrumentLogo instrument={selected} />
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                          <span>{selected.exchange}</span>
+                          <span aria-hidden="true">-</span>
+                          <span className="font-mono">{selected.symbol}</span>
+                          {selected.benchmark ? (
+                            <>
+                              <span aria-hidden="true">-</span>
+                              <span>{selected.benchmark}</span>
+                            </>
+                          ) : null}
+                        </div>
+                        <CardTitle className="mt-1 truncate text-2xl leading-tight sm:text-3xl xl:text-4xl">
                           {selected.name}
-                        </span>
-                      </CardTitle>
-                      <CardDescription className="mt-2 max-w-3xl text-sm leading-6">{selected.summary}</CardDescription>
+                        </CardTitle>
+                        <div className="mt-5 flex flex-wrap items-end gap-x-3 gap-y-2">
+                          <span className="text-5xl font-normal leading-none tracking-normal text-foreground">
+                            {formatCurrency(selectedDisplayPrice).replace("$", "")}
+                          </span>
+                          <span className="pb-1 text-base text-muted-foreground">{selectedDisplayCurrency}</span>
+                          <ChangePill value={selected.changePercent} large />
+                        </div>
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          {getCadPriceNote(selected)} · Data window {marketSignal.dataWindowLabel}
+                        </p>
+                      </div>
                     </div>
                     <div className="flex flex-col gap-2 2xl:shrink-0 2xl:items-end">
                       <div className="flex flex-wrap items-center gap-2">
@@ -913,6 +962,11 @@ export function StockDashboard() {
                       setRefreshIntervalMs={setRefreshIntervalMs}
                     />
                   ) : null}
+                  <AboutInstrumentStrip
+                    instrument={selected}
+                    expanded={isAboutExpanded}
+                    onExpandedChange={setIsAboutExpanded}
+                  />
                   {showIndexLens ? (
                   <div className="mt-4">
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -963,7 +1017,7 @@ export function StockDashboard() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="mb-3 rounded-md border border-white/10 bg-background/35 p-3">
+                  <div className="mb-3 rounded-md border border-border bg-background/35 p-3">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                       <div className="flex items-center gap-3">
                         <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-primary">
@@ -1036,7 +1090,7 @@ export function StockDashboard() {
                               <td className="px-3 py-3">{fund.expenseRatio ? formatPercent(fund.expenseRatio) : "n/a"}</td>
                               <td className="px-3 py-3">{fund.dividendYield ? formatPercent(fund.dividendYield) : "n/a"}</td>
                               <td className="px-3 py-3">{fund.aum ? formatCompactCurrency(fund.aum) : "n/a"}</td>
-                              <td className="px-3 py-3 text-red-200">{formatPercent(fund.maxDrawdown)}</td>
+                              <td className="px-3 py-3 text-red-700 dark:text-red-200">{formatPercent(fund.maxDrawdown)}</td>
                               <td className="px-3 py-3">
                                 <AllocationBar label={fund.sectors[0]?.label ?? "n/a"} value={fund.sectors[0]?.weight ?? 0} />
                               </td>
@@ -1086,14 +1140,14 @@ export function StockDashboard() {
 
             {researchRailVisible ? (
             <div className="flex min-w-0 flex-col gap-4">
-              <Card className="focus-rail border-primary/25">
+              <Card className="finance-card border-primary/20">
                 <CardHeader>
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <CardTitle>Quick Take</CardTitle>
                       <CardDescription>News plus a plain-English view.</CardDescription>
                     </div>
-                    <DirectionBadge direction={assessment.direction} />
+                    <DirectionBadge direction={marketSignal.direction} />
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -1110,12 +1164,19 @@ export function StockDashboard() {
                   ) : null}
 
                   <div className="grid grid-cols-2 gap-3">
-                    <Metric label="Confidence" value={formatPercent(assessment.confidence)} icon={<Gauge />} />
-                    <Metric label="Window" value={assessment.timeHorizon} icon={<Radar />} />
+                    <Metric label="Confidence" value={formatPercent(marketSignal.confidence)} icon={<Gauge />} />
+                    <Metric label="Window" value={marketSignal.timeHorizon} icon={<Radar />} />
                   </div>
-                  <p className="rounded-md border border-white/10 bg-background/45 p-3 text-sm leading-6 text-muted-foreground">
+                  <div className="rounded-md border border-border bg-secondary/45 p-3">
+                    <div className="mb-2 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                      <SignalMiniStat label="Trend" value={formatPercent(marketSignal.trendReturn, { signed: true })} />
+                      <SignalMiniStat label="Volatility" value={formatPercent(marketSignal.realizedVolatility)} />
+                      <SignalMiniStat label="Coverage" value={marketSignal.dataWindowLabel} />
+                    </div>
+                    <p className="text-sm leading-6 text-muted-foreground">
                     {assessment.summary}
-                  </p>
+                    </p>
+                  </div>
                   <Tabs defaultValue="bull">
                     <TabsList className="grid w-full grid-cols-3">
                       <TabsTrigger value="bull">Bull</TabsTrigger>
@@ -1212,6 +1273,15 @@ type IndexInsight = {
   tone: InsightTone;
 };
 
+type MarketSignal = {
+  direction: Assessment["direction"];
+  confidence: number;
+  timeHorizon: string;
+  dataWindowLabel: string;
+  trendReturn: number;
+  realizedVolatility: number;
+};
+
 function WorkspaceControls({
   chartSize,
   setChartSize,
@@ -1288,7 +1358,7 @@ function WorkspaceControls({
 
   return (
     <div
-      className="dock-bar focus-rail rounded-lg border border-white/10 bg-background/72 px-3 py-2 backdrop-blur-xl"
+      className="dock-bar focus-rail rounded-lg border border-border bg-card/85 px-3 py-2 backdrop-blur-xl"
       data-ready={isReady ? "true" : "false"}
       data-testid="workspace-layout"
       suppressHydrationWarning
@@ -1392,7 +1462,7 @@ function PanelDropZone({
           />
         ))
       ) : (
-        <span className="rounded-md border border-white/10 px-2 py-1 text-xs text-muted-foreground">drop here</span>
+        <span className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">drop here</span>
       )}
     </div>
   );
@@ -1480,7 +1550,7 @@ function DockSlider({
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="flex h-9 shrink-0 items-center gap-2 rounded-md border border-white/10 bg-background/35 px-2 text-xs text-muted-foreground">
+    <label className="flex h-9 shrink-0 items-center gap-2 rounded-md border border-border bg-background/35 px-2 text-xs text-muted-foreground">
       <span>{label}</span>
       <input
         type="range"
@@ -1674,6 +1744,146 @@ function getPortfolioRole(instrument: InstrumentDetail): { label: string; tone: 
   return { label: "Single-name", tone: "magenta" };
 }
 
+function buildMarketSignal(instrument: InstrumentDetail): MarketSignal {
+  const normalizedPoints = normalizeHistoricalChartPoints(instrument);
+  const points = normalizedPoints.length >= 8 ? normalizedPoints : buildChartPoints(instrument, "1Y");
+  const sample = points.slice(-Math.min(points.length, 252));
+  const returns = dailyReturns(sample);
+  const annualizedVolatility = calculateAnnualizedVolatility(returns);
+  const recentReturn = periodReturn(sample, 21);
+  const intermediateReturn = periodReturn(sample, 63);
+  const longReturn = periodReturn(sample, Math.min(126, sample.length - 1));
+  const trendReturn = recentReturn * 0.5 + intermediateReturn * 0.32 + longReturn * 0.18;
+  const trendSign = Math.sign(trendReturn);
+  const trendStrength = clamp(Math.abs(trendReturn) / Math.max(annualizedVolatility * 0.42, 0.025), 0, 1);
+  const consistency =
+    trendSign === 0 || returns.length === 0
+      ? 0.4
+      : returns.filter((value) => Math.sign(value) === trendSign || Math.abs(value) < 0.001).length / returns.length;
+  const agreement =
+    Math.sign(recentReturn) === Math.sign(intermediateReturn) && Math.sign(intermediateReturn) === Math.sign(longReturn)
+      ? 1
+      : Math.sign(recentReturn) === Math.sign(intermediateReturn)
+        ? 0.68
+        : 0.32;
+  const volatilityScore = 1 - clamp(annualizedVolatility / 0.7, 0, 1);
+  const drawdownScore = 1 - clamp(Math.abs(maxDrawdown(sample)) / 0.45, 0, 1);
+  const coverageScore = clamp((sample.length - 8) / 244, 0, 1);
+  const rawConfidence =
+    0.24 +
+    trendStrength * 0.25 +
+    consistency * 0.18 +
+    agreement * 0.12 +
+    volatilityScore * 0.1 +
+    drawdownScore * 0.06 +
+    coverageScore * 0.05;
+  const direction =
+    sample.length < 12
+      ? "uncertain"
+      : trendStrength < 0.18
+        ? "sideways"
+        : trendReturn > 0
+          ? "up"
+          : "down";
+  const maxConfidence = direction === "up" || direction === "down" ? 0.78 : 0.66;
+
+  return {
+    direction,
+    confidence: Number(clamp(rawConfidence, 0.28, maxConfidence).toFixed(2)),
+    timeHorizon: chooseSignalWindow(sample.length, annualizedVolatility, trendStrength, consistency),
+    dataWindowLabel: formatSignalDataWindow(sample),
+    trendReturn,
+    realizedVolatility: annualizedVolatility
+  };
+}
+
+function dailyReturns(points: ChartPoint[]) {
+  return points.slice(1).map((point, index) => {
+    const previous = points[index]?.close ?? point.close;
+
+    return previous > 0 ? (point.close - previous) / previous : 0;
+  });
+}
+
+function calculateAnnualizedVolatility(returns: number[]) {
+  if (returns.length < 2) {
+    return 0;
+  }
+
+  const average = returns.reduce((total, value) => total + value, 0) / returns.length;
+  const variance = returns.reduce((total, value) => total + (value - average) ** 2, 0) / (returns.length - 1);
+
+  return Math.sqrt(variance) * Math.sqrt(252);
+}
+
+function periodReturn(points: ChartPoint[], lookback: number) {
+  if (points.length < 2) {
+    return 0;
+  }
+
+  const end = points.at(-1)?.close ?? 0;
+  const startIndex = Math.max(points.length - 1 - lookback, 0);
+  const start = points[startIndex]?.close ?? end;
+
+  return start > 0 ? (end - start) / start : 0;
+}
+
+function maxDrawdown(points: ChartPoint[]) {
+  let peak = points[0]?.close ?? 0;
+  let worst = 0;
+
+  for (const point of points) {
+    peak = Math.max(peak, point.close);
+    worst = Math.min(worst, peak > 0 ? (point.close - peak) / peak : 0);
+  }
+
+  return worst;
+}
+
+function chooseSignalWindow(pointCount: number, volatility: number, trendStrength: number, consistency: number) {
+  if (pointCount < 20) {
+    return "5-10 days";
+  }
+
+  if (volatility >= 0.46 || trendStrength >= 0.78) {
+    return "1-3 weeks";
+  }
+
+  if (trendStrength >= 0.48 && consistency >= 0.56 && pointCount >= 126) {
+    return "4-8 weeks";
+  }
+
+  return "2-6 weeks";
+}
+
+function formatSignalDataWindow(points: ChartPoint[]) {
+  if (!points.length) {
+    return "No bars";
+  }
+
+  if (points.length < 30) {
+    return `${points.length} bars`;
+  }
+
+  const first = points[0]?.date;
+  const last = points.at(-1)?.date;
+  const days = first && last ? Math.max(1, Math.round((last.getTime() - first.getTime()) / (24 * 60 * 60 * 1000))) : points.length;
+
+  if (days >= 330) {
+    return "1Y data";
+  }
+
+  if (days >= 120) {
+    return "6M data";
+  }
+
+  if (days >= 55) {
+    return "3M data";
+  }
+
+  return `${points.length} bars`;
+}
+
 function IndexInsightTile({ insight }: { insight: IndexInsight }) {
   const borderStyles = {
     primary: "border-primary/25 bg-primary/7",
@@ -1683,9 +1893,9 @@ function IndexInsightTile({ insight }: { insight: IndexInsight }) {
   };
   const iconStyles = {
     primary: "text-primary",
-    green: "text-emerald-200",
-    amber: "text-amber-200",
-    magenta: "text-fuchsia-200"
+    green: "text-emerald-700 dark:text-emerald-200",
+    amber: "text-amber-700 dark:text-amber-200",
+    magenta: "text-fuchsia-700 dark:text-fuchsia-200"
   };
 
   return (
@@ -1696,6 +1906,54 @@ function IndexInsightTile({ insight }: { insight: IndexInsight }) {
       </div>
       <div className="mt-2 break-words text-lg font-semibold tracking-normal">{insight.value}</div>
       <p className="mt-1 text-xs leading-5 text-muted-foreground">{insight.detail}</p>
+    </div>
+  );
+}
+
+function InstrumentLogo({ instrument }: { instrument: InstrumentDetail }) {
+  const letters = instrument.symbol.replace(/[^A-Z0-9]/gi, "").slice(0, 2).toUpperCase() || "ST";
+
+  return (
+    <div className="hidden size-16 shrink-0 items-center justify-center rounded-xl bg-secondary text-xl font-semibold text-muted-foreground sm:flex">
+      {letters}
+    </div>
+  );
+}
+
+function AboutInstrumentStrip({
+  instrument,
+  expanded,
+  onExpandedChange
+}: {
+  instrument: InstrumentDetail;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+}) {
+  return (
+    <div className={cn("mt-4 border border-border bg-secondary/45 px-4 py-3", expanded ? "rounded-xl" : "rounded-full")}>
+      <div className={cn("flex gap-3", expanded ? "flex-col" : "items-center")}>
+        <button
+          type="button"
+          className="inline-flex max-w-[52vw] shrink-0 items-center justify-center gap-2 rounded-full px-2 py-1 text-sm font-medium text-foreground transition hover:bg-background sm:max-w-[360px]"
+          aria-expanded={expanded}
+          onClick={() => onExpandedChange(!expanded)}
+        >
+          <span className="truncate">{expanded ? "Less about" : "More about"} {instrument.name}</span>
+          {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+        </button>
+        <p className={cn("min-w-0 text-sm leading-6 text-muted-foreground", expanded ? "max-w-5xl" : "line-clamp-1 flex-1")}>
+          {instrument.summary}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function SignalMiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] font-medium uppercase text-muted-foreground">{label}</div>
+      <div className="truncate font-mono text-xs font-semibold text-foreground">{value}</div>
     </div>
   );
 }
@@ -1712,9 +1970,9 @@ function StateNotice({
   children: ReactNode;
 }) {
   const styles = {
-    muted: "border-white/10 bg-background/45 text-muted-foreground",
+    muted: "border-border bg-secondary/45 text-muted-foreground",
     primary: "border-primary/25 bg-primary/8 text-primary",
-    warning: "border-amber-300/30 bg-amber-400/10 text-amber-100"
+    warning: "border-amber-500/30 bg-amber-400/10 text-amber-700 dark:text-amber-100"
   };
 
   return (
@@ -1741,7 +1999,7 @@ function EmptyState({
 }) {
   return (
     <div className="rounded-md border border-dashed border-border bg-background/30 p-4 text-center" role="status">
-      <div className="mx-auto flex size-10 items-center justify-center rounded-md border border-white/10 bg-secondary/60 text-primary [&_svg]:size-5">
+      <div className="mx-auto flex size-10 items-center justify-center rounded-md border border-border bg-secondary/60 text-primary [&_svg]:size-5">
         {icon}
       </div>
       <div className="mt-3 text-sm font-medium text-foreground">{title}</div>
@@ -1784,8 +2042,8 @@ function ChangePill({ value, large = false }: { value: number; large?: boolean }
         "inline-flex items-center gap-1 rounded-md border px-2 py-1 font-mono text-xs",
         large && "px-3 py-1.5 text-sm",
         positive
-          ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-200"
-          : "border-red-300/30 bg-red-400/10 text-red-200"
+          ? "border-emerald-500/30 bg-emerald-400/10 text-emerald-700 dark:text-emerald-200"
+          : "border-red-500/30 bg-red-400/10 text-red-700 dark:text-red-200"
       )}
     >
       {positive ? <ArrowUpRight className="size-3.5" /> : <ArrowDownRight className="size-3.5" />}
@@ -1796,7 +2054,7 @@ function ChangePill({ value, large = false }: { value: number; large?: boolean }
 
 function Metric({ label, value, icon }: { label: string; value: string; icon?: ReactNode }) {
   return (
-    <div className="rounded-md border border-white/10 bg-background/45 p-3">
+    <div className="rounded-md border border-border bg-secondary/45 p-3">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         {icon ? <span className="[&_svg]:size-3.5">{icon}</span> : null}
         {label}
@@ -1808,7 +2066,7 @@ function Metric({ label, value, icon }: { label: string; value: string; icon?: R
 
 function TooltipMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1.5">
+    <div className="rounded-md border border-border bg-secondary/45 px-2 py-1.5">
       <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
       <div className="mt-0.5 font-mono text-[12px] text-foreground">{value}</div>
     </div>
@@ -1898,7 +2156,7 @@ function TrackerCommandCenter({
         </div>
 
         <div className="grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-          <div className="rounded-md border border-white/10 bg-background/35 p-3">
+          <div className="rounded-md border border-border bg-background/35 p-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
@@ -1996,7 +2254,7 @@ function TrackerCommandCenter({
                     data-testid="position-cost-input"
                   />
                 </label>
-                <div className="rounded-md border border-white/10 bg-background/45 p-3 text-sm">
+                <div className="rounded-md border border-border bg-background/45 p-3 text-sm">
                   <div className="text-xs text-muted-foreground">Selected value</div>
                   <div className="mt-1 font-semibold">{formatCadCurrency(selectedMarketValue)}</div>
                 </div>
@@ -2010,7 +2268,7 @@ function TrackerCommandCenter({
 
           <div
             id="tracker-alerts"
-            className="scroll-mt-6 rounded-md border border-white/10 bg-background/35 p-3 lg:scroll-mt-28"
+            className="scroll-mt-6 rounded-md border border-border bg-background/35 p-3 lg:scroll-mt-28"
             data-testid="tracker-alerts"
           >
             <div className="flex items-center justify-between gap-2">
@@ -2050,7 +2308,7 @@ function TrackerCommandCenter({
         </div>
 
         <div className="grid gap-3 xl:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]">
-          <div className="rounded-md border border-white/10 bg-background/35 p-3">
+          <div className="rounded-md border border-border bg-background/35 p-3">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <ChartPie className="size-4 text-primary" />
@@ -2091,7 +2349,7 @@ function TrackerCommandCenter({
                           <AllocationBar label={formatPercent(row.allocation)} value={row.allocation} />
                         </td>
                         <td className="px-3 py-3">{formatSignedCad(row.dayChangeCad)}</td>
-                        <td className={cn("px-3 py-3", row.unrealizedPnlCad >= 0 ? "text-emerald-200" : "text-red-200")}>
+                        <td className={cn("px-3 py-3", row.unrealizedPnlCad >= 0 ? "text-emerald-700 dark:text-emerald-200" : "text-red-700 dark:text-red-200")}>
                           {formatSignedCad(row.unrealizedPnlCad)}
                           <div className="text-xs">{formatPercent(row.unrealizedPnlPercent, { signed: true })}</div>
                         </td>
@@ -2107,21 +2365,21 @@ function TrackerCommandCenter({
           </div>
 
           <div className="space-y-3">
-            <div className="rounded-md border border-white/10 bg-background/35 p-3">
+            <div className="rounded-md border border-border bg-background/35 p-3">
               <div className="mb-2 flex items-center gap-2 text-sm font-medium">
                 <ShieldCheck className="size-4 text-primary" />
                 Risk Flags
               </div>
               <ul className="space-y-2">
                 {portfolio.riskFlags.map((flag) => (
-                  <li key={flag} className="rounded-md border border-white/10 bg-secondary/35 p-2 text-xs leading-5 text-muted-foreground">
+                  <li key={flag} className="rounded-md border border-border bg-secondary/35 p-2 text-xs leading-5 text-muted-foreground">
                     {flag}
                   </li>
                 ))}
               </ul>
             </div>
 
-            <div className="rounded-md border border-white/10 bg-background/35 p-3">
+            <div className="rounded-md border border-border bg-background/35 p-3">
               <div className="mb-2 flex items-center gap-2 text-sm font-medium">
                 <Layers3 className="size-4 text-primary" />
                 Allocation
@@ -2133,7 +2391,7 @@ function TrackerCommandCenter({
               </div>
             </div>
 
-            <div className="rounded-md border border-white/10 bg-background/35 p-3">
+            <div className="rounded-md border border-border bg-background/35 p-3">
               <div className="mb-2 flex items-center gap-2 text-sm font-medium">
                 <Target className="size-4 text-primary" />
                 Underlying
@@ -2289,8 +2547,12 @@ function ChartTerminal({
   );
   const latest = points.at(-1);
   const first = points[0];
-  const latestValue = latest?.close ?? instrument.price;
+  const latestValue = getDisplayPrice(instrument) || latest?.close || instrument.price;
   const totalChange = first ? (latestValue - first.close) / first.close : instrument.changePercent;
+  const chartToneColor = totalChange >= 0 ? "var(--chart-positive)" : "var(--chart-negative)";
+  const chartFillStart = totalChange >= 0 ? "rgba(24,128,56,0.18)" : "rgba(217,48,37,0.16)";
+  const chartFillEnd = totalChange >= 0 ? "rgba(24,128,56,0.01)" : "rgba(217,48,37,0.01)";
+  const chartId = instrument.symbol.replace(/[^A-Za-z0-9_-]/g, "-");
   const averageVolume = points.reduce((total, point) => total + point.volume, 0) / Math.max(points.length, 1);
   const rangeHigh = Math.max(...points.map((point) => point.high), latestValue);
   const rangeLow = Math.min(...points.map((point) => point.low), latestValue);
@@ -2350,7 +2612,7 @@ function ChartTerminal({
   }
 
   return (
-    <div className="rounded-lg border border-white/10 bg-[#080b0b] p-3">
+    <div className="rounded-xl border border-border bg-card p-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-2">
@@ -2391,20 +2653,24 @@ function ChartTerminal({
         </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap gap-2">
+      <div className="mt-5 flex flex-wrap gap-1 border-b border-border">
         {chartRanges.map((item) => (
-          <Button
+          <button
             key={item}
             type="button"
-            variant={item === range ? "secondary" : "ghost"}
-            size="sm"
-            className="h-8 px-3 font-mono"
+            className={cn(
+              "h-10 border-b-2 px-3 text-sm font-medium transition",
+              item === range
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
             onClick={() => onRangeChange(item)}
           >
             {item}
-          </Button>
+          </button>
         ))}
-        <span className="mx-1 hidden h-8 w-px bg-border sm:block" />
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
         {chartStyles.map((item) => (
           <Button
             key={item}
@@ -2424,7 +2690,7 @@ function ChartTerminal({
 
       <div className={cn("mt-4 grid gap-3", size === "Max" ? "2xl:grid-cols-[minmax(0,1fr)_180px]" : "xl:grid-cols-[minmax(0,1fr)_120px]")}>
         <div
-          className={cn("relative overflow-visible rounded-md border border-white/10 bg-background/35 p-3", chartHeightClass[size])}
+          className={cn("relative overflow-visible rounded-lg border border-border bg-background p-3", chartHeightClass[size])}
           data-testid="price-chart-panel"
           onPointerMove={handleChartPointerMove}
           onPointerLeave={() => setHoverIndex(null)}
@@ -2437,20 +2703,19 @@ function ChartTerminal({
             aria-label={`${instrument.symbol} ${range} ${style.toLowerCase()} price chart`}
           >
             <defs>
-              <linearGradient id={`chart-line-${instrument.symbol}`} x1="0" x2="1" y1="0" y2="0">
-                <stop offset="0%" stopColor="#52eec5" />
-                <stop offset="55%" stopColor="#f5c451" />
-                <stop offset="100%" stopColor="#e365ff" />
+              <linearGradient id={`chart-line-${chartId}`} x1="0" x2="1" y1="0" y2="0">
+                <stop offset="0%" stopColor={chartToneColor} />
+                <stop offset="100%" stopColor={chartToneColor} />
               </linearGradient>
-              <linearGradient id={`chart-fill-${instrument.symbol}`} x1="0" x2="0" y1="0" y2="1">
-                <stop offset="0%" stopColor="rgba(82,238,197,0.28)" />
-                <stop offset="100%" stopColor="rgba(227,101,255,0.02)" />
+              <linearGradient id={`chart-fill-${chartId}`} x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stopColor={chartFillStart} />
+                <stop offset="100%" stopColor={chartFillEnd} />
               </linearGradient>
             </defs>
 
             {showGrid
               ? [20, 38, 56, 74].map((y) => (
-                  <line key={y} x1="8" x2="92" y1={y} y2={y} stroke="rgba(255,255,255,0.08)" strokeWidth="0.35" />
+                  <line key={y} x1="8" x2="92" y1={y} y2={y} stroke="var(--chart-grid)" strokeWidth="0.35" />
                 ))
               : null}
 
@@ -2462,7 +2727,7 @@ function ChartTerminal({
                     y={96 - bar.height}
                     width={bar.width}
                     height={bar.height}
-                    fill="rgba(82,238,197,0.22)"
+                    fill="var(--chart-volume)"
                   />
                 ))
               : null}
@@ -2471,7 +2736,7 @@ function ChartTerminal({
               <polyline
                 points={chart.benchmarkPath}
                 fill="none"
-                stroke="rgba(245,196,81,0.72)"
+                stroke="var(--chart-benchmark)"
                 strokeDasharray="2 2"
                 strokeLinecap="round"
                 strokeWidth="1.5"
@@ -2480,7 +2745,7 @@ function ChartTerminal({
             ) : null}
 
             {style === "Area" ? (
-              <polygon points={`${chart.areaPath} 92,82 8,82`} fill={`url(#chart-fill-${instrument.symbol})`} />
+              <polygon points={`${chart.areaPath} 92,82 8,82`} fill={`url(#chart-fill-${chartId})`} />
             ) : null}
 
             {style === "Candles"
@@ -2491,7 +2756,7 @@ function ChartTerminal({
                       x2={candle.x}
                       y1={candle.yHigh}
                       y2={candle.yLow}
-                      stroke={candle.positive ? "#52eec5" : "#ff8a8a"}
+                      stroke={candle.positive ? "var(--chart-positive)" : "var(--chart-negative)"}
                       strokeWidth="1.2"
                       vectorEffect="non-scaling-stroke"
                     />
@@ -2501,7 +2766,7 @@ function ChartTerminal({
                       width={candle.width}
                       height={Math.max(Math.abs(candle.yClose - candle.yOpen), 1.1)}
                       rx="0.3"
-                      fill={candle.positive ? "rgba(82,238,197,0.62)" : "rgba(255,138,138,0.62)"}
+                      fill={candle.positive ? "rgba(24,128,56,0.58)" : "rgba(217,48,37,0.58)"}
                     />
                   </g>
                 ))
@@ -2509,7 +2774,7 @@ function ChartTerminal({
                   <polyline
                     points={chart.linePath}
                     fill="none"
-                    stroke={`url(#chart-line-${instrument.symbol})`}
+                    stroke={`url(#chart-line-${chartId})`}
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeWidth="2.4"
@@ -2521,7 +2786,7 @@ function ChartTerminal({
               <polyline
                 points={chart.movingAveragePath}
                 fill="none"
-                stroke="rgba(255,255,255,0.72)"
+                stroke="var(--chart-moving-average)"
                 strokeLinecap="round"
                 strokeWidth="1.4"
                 vectorEffect="non-scaling-stroke"
@@ -2535,7 +2800,7 @@ function ChartTerminal({
                   x2={activePoint.x}
                   y1="10"
                   y2="96"
-                  stroke={isHoveringChart ? "rgba(245,196,81,0.45)" : "rgba(255,255,255,0.12)"}
+                  stroke={isHoveringChart ? "var(--chart-crosshair-active)" : "var(--chart-crosshair)"}
                   strokeWidth="0.5"
                 />
                 <line
@@ -2543,10 +2808,10 @@ function ChartTerminal({
                   x2="92"
                   y1={activePoint.y}
                   y2={activePoint.y}
-                  stroke={isHoveringChart ? "rgba(245,196,81,0.32)" : "rgba(255,255,255,0.08)"}
+                  stroke={isHoveringChart ? "var(--chart-crosshair-active)" : "var(--chart-crosshair)"}
                   strokeWidth="0.5"
                 />
-                <circle cx={activePoint.x} cy={activePoint.y} r={isHoveringChart ? "2.1" : "1.6"} fill="#f5c451" />
+                <circle cx={activePoint.x} cy={activePoint.y} r={isHoveringChart ? "2.1" : "1.6"} fill={chartToneColor} />
               </g>
             ) : null}
 
@@ -2561,18 +2826,18 @@ function ChartTerminal({
             />
           </svg>
 
-          <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-white/10 bg-background/75 px-2 py-1 text-xs text-muted-foreground backdrop-blur">
+          <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-border bg-card/90 px-2 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur">
             {chart.yLabels[2]} / {chart.yLabels[1]} / {chart.yLabels[0]}
           </div>
           {activePoint && tooltipStyle ? (
             <div
               data-testid="chart-hover-card"
-              className="pointer-events-none absolute z-10 min-w-[230px] max-w-[260px] rounded-md border border-primary/30 bg-[#07100f]/95 p-3 text-xs shadow-2xl shadow-black/30 backdrop-blur"
+              className="pointer-events-none absolute z-10 min-w-[230px] max-w-[260px] rounded-md border border-border bg-card/95 p-3 text-xs shadow-xl backdrop-blur"
               style={tooltipStyle}
             >
               <div className="flex items-center justify-between gap-3 text-muted-foreground">
                 <span>{formatLongChartDate(activePoint.point.date)}</span>
-                <span className="rounded-md border border-white/10 px-1.5 py-0.5 font-mono">{range} range</span>
+                  <span className="rounded-md border border-border px-1.5 py-0.5 font-mono">{range} range</span>
               </div>
               <div className="mt-2 text-[10px] font-semibold uppercase text-muted-foreground">Price in CAD</div>
               <div className="mt-0.5 text-xl font-semibold tracking-normal text-foreground">
@@ -2588,7 +2853,7 @@ function ChartTerminal({
                   <TooltipMetric label="Close" value={formatCurrency(activePoint.point.close)} />
                 )}
               </div>
-              <div className="mt-2 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-muted-foreground">
+              <div className="mt-2 rounded-md border border-border bg-secondary/45 px-2 py-1 text-[11px] text-muted-foreground">
                 {getCadPriceNote(instrument)}
               </div>
             </div>
@@ -2651,7 +2916,7 @@ function ChartSettingsPanel({
   setRefreshIntervalMs: (value: (typeof refreshIntervals)[number]) => void;
 }) {
   return (
-    <div className="mt-3 rounded-lg border border-white/10 bg-background/45 p-3">
+    <div className="mt-3 rounded-lg border border-border bg-background/45 p-3">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="size-4 text-primary" />
@@ -2695,7 +2960,7 @@ function ChartSettingsPanel({
         <SettingToggle label="Crosshair" checked={showCrosshair} onChange={setShowCrosshair} />
       </div>
 
-      <div className="mt-3 flex flex-col gap-2 rounded-md border border-white/10 bg-background/35 p-3 lg:flex-row lg:items-center lg:justify-between">
+      <div className="mt-3 flex flex-col gap-2 rounded-md border border-border bg-background/35 p-3 lg:flex-row lg:items-center lg:justify-between">
         <SettingToggle label="Live pulse" checked={autoRefresh} onChange={setAutoRefresh} compact />
         <div className="flex flex-wrap gap-2">
           {refreshIntervals.map((interval) => (
@@ -2940,9 +3205,11 @@ function movingAverage(values: number[], windowSize: number) {
 
 function rangeToPointCount(range: ChartRange) {
   const counts: Record<ChartRange, number> = {
+    "1D": 2,
+    "5D": 5,
     "1M": 22,
-    "3M": 64,
     "6M": 126,
+    YTD: 126,
     "1Y": 252,
     "5Y": 520,
     MAX: 780
@@ -3012,6 +3279,16 @@ function getInstrumentCadPrice(instrument: InstrumentDetail) {
   return toCadPrice(instrument.price, instrument);
 }
 
+function getDisplayPrice(instrument: InstrumentDetail) {
+  const latestClose = instrument.history.at(-1)?.close;
+
+  return instrument.price > 0 ? instrument.price : latestClose && latestClose > 0 ? latestClose : 0;
+}
+
+function getInstrumentCurrencyLabel(instrument: InstrumentDetail) {
+  return isCadListedInstrument(instrument) ? "CAD" : "USD";
+}
+
 function getCadPriceNote(instrument: InstrumentDetail) {
   return isCadListedInstrument(instrument)
     ? "CAD-listed price"
@@ -3037,10 +3314,10 @@ function clamp(value: number, min: number, max: number) {
 
 function DirectionBadge({ direction }: { direction: Assessment["direction"] }) {
   const styles = {
-    up: "border-emerald-300/30 bg-emerald-400/10 text-emerald-200",
-    down: "border-red-300/30 bg-red-400/10 text-red-200",
-    sideways: "border-amber-300/30 bg-amber-400/10 text-amber-200",
-    uncertain: "border-fuchsia-300/30 bg-fuchsia-400/10 text-fuchsia-200"
+    up: "border-emerald-500/30 bg-emerald-400/10 text-emerald-700 dark:text-emerald-200",
+    down: "border-red-500/30 bg-red-400/10 text-red-700 dark:text-red-200",
+    sideways: "border-amber-500/30 bg-amber-400/10 text-amber-700 dark:text-amber-200",
+    uncertain: "border-fuchsia-500/30 bg-fuchsia-400/10 text-fuchsia-700 dark:text-fuchsia-200"
   };
 
   return <span className={cn("rounded-md border px-3 py-1 text-xs font-semibold uppercase", styles[direction])}>{direction}</span>;
@@ -3103,7 +3380,7 @@ function AllocationBar({ label, value }: { label: string; value: number }) {
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-secondary">
         <div
-          className="h-full rounded-full bg-[linear-gradient(90deg,#52eec5,#f5c451,#e365ff)]"
+          className="h-full rounded-full bg-primary"
           style={{ width: `${Math.min(value * 100, 100)}%` }}
         />
       </div>
